@@ -5,6 +5,7 @@ import { api } from "@packages/backend/convex/_generated/api";
 import { useMutation, useQuery } from "convex/react";
 import Image from "next/image";
 import { useEffect, useState } from "react";
+import CreateFamily from "../family/CreateFamily";
 import CreateNote from "./CreateNote";
 import NoteItem from "./NoteItem";
 
@@ -25,10 +26,9 @@ const Notes = () => {
       setTimeoutReached(false);
       return;
     }
+
     const timer = setTimeout(() => {
-      if (isWaitingForMapping) {
-        setTimeoutReached(true);
-      }
+      setTimeoutReached(true);
     }, 10000);
     return () => clearTimeout(timer);
   }, [isWaitingForMapping]);
@@ -69,6 +69,10 @@ const Notes = () => {
 
   if (!isLoaded) {
     return <MappingSkeleton />;
+  }
+
+  if (mappedUser && !mappedUser.familyId) {
+    return <CreateFamily />;
   }
 
   return (

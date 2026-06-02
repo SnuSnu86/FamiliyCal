@@ -18,6 +18,7 @@ if (!clerkPublishableKey)
   );
 
 const convex = new ConvexReactClient(convexUrl);
+const checkedClerkPublishableKey = clerkPublishableKey;
 
 export default function ConvexClientProvider({
   children,
@@ -25,7 +26,7 @@ export default function ConvexClientProvider({
   children: ReactNode;
 }) {
   return (
-    <ClerkProvider publishableKey={clerkPublishableKey} tokenCache={tokenCache}>
+    <ClerkProvider publishableKey={checkedClerkPublishableKey} tokenCache={tokenCache}>
       <ConvexProviderWithClerk client={convex} useAuth={useAuth}>
         {children}
       </ConvexProviderWithClerk>

@@ -4,6 +4,16 @@ import { api } from "@packages/backend/convex/_generated/api";
 import { useMutation } from "convex/react";
 import { FormEvent, useState } from "react";
 
+function getErrorMessage(err: unknown): string {
+  if (err && typeof err === "object" && "data" in err && err.data) {
+    return String(err.data);
+  }
+  if (err instanceof Error) {
+    return err.message.replace(/^ConvexError:\s*/, "");
+  }
+  return "Die Familie konnte nicht erstellt werden.";
+}
+
 export default function CreateFamily() {
   const createFamily = useMutation(api.families.create);
   const [name, setName] = useState("");
@@ -18,19 +28,19 @@ export default function CreateFamily() {
       setError("Bitte gib einen Familiennamen ein.");
       return;
     }
+    if (trimmedName.length > 100) {
+      setError("Der Familienname darf maximal 100 Zeichen lang sein.");
+      return;
+    }
 
     setError(null);
     setIsSubmitting(true);
 
     try {
       await createFamily({ name: trimmedName });
+      // If successful, we don't reset isSubmitting because the component will unmount
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Die Familie konnte nicht erstellt werden.",
-      );
-    } finally {
+      setError(getErrorMessage(err));
       setIsSubmitting(false);
     }
   }
@@ -60,6 +70,7 @@ export default function CreateFamily() {
             className="w-full rounded-[12px] border border-border-hairline bg-white px-4 py-3 text-base outline-none transition focus:border-accent-sage focus:ring-2 focus:ring-accent-sage/30"
             placeholder="z. B. Familie Schmidt"
             disabled={isSubmitting}
+            maxLength={100}
           />
 
           {error ? (

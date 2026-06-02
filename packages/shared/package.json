@@ -6,9 +6,17 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "node ../../node_modules/typescript/bin/tsc --noEmit",
+    "test": "tsx src/sync/index.test.ts && tsx src/calendar/recurrence.test.ts && tsx src/calendar/resourceConflicts.test.ts"
   },
   "devDependencies": {
+    "@types/luxon": "^3.7.1",
+    "tsx": "^4.22.4",
     "typescript": "5.5.3"
+  },
+  "dependencies": {
+    "luxon": "^3.7.2",
+    "rrule": "^2.8.1",
+    "zod": "^4.4.3"
   }
 }

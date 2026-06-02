@@ -1,13 +1,44 @@
 import { useAuth, useUser } from "@clerk/expo";
 import { api } from "@packages/backend/convex/_generated/api";
-import { useQuery } from "convex/react";
-import { Redirect, Stack } from "expo-router";
-import React, { useEffect, useState } from "react";
+import { useMutation, useQuery } from "convex/react";
+import * as Linking from "expo-linking";
+import { Redirect, Stack, useSegments } from "expo-router";
+import * as SecureStore from "expo-secure-store";
+import React, { useEffect, useRef, useState } from "react";
 import { StyleSheet, View, Text, TouchableOpacity, ActivityIndicator } from "react-native";
 
 export default function AppLayout() {
   const { isLoaded: isAuthLoaded, isSignedIn } = useAuth();
   const { isLoaded: isUserLoaded, user } = useUser();
+
+  // Listen to deep links when user is signed out
+  useEffect(() => {
+    async function handleInitialUrl() {
+      if (isSignedIn) return;
+      const url = await Linking.getInitialURL();
+      if (url) {
+        handleUrl(url);
+      }
+    }
+
+    function handleUrl(url: string) {
+      if (isSignedIn) return;
+      const parsed = Linking.parse(url);
+      const token = typeof parsed.queryParams?.token === "string" ? parsed.queryParams.token : undefined;
+      if (token) {
+        SecureStore.setItemAsync("invitationToken", token).catch(() => null);
+      }
+    }
+
+    handleInitialUrl();
+    const subscription = Linking.addEventListener("url", (event) => {
+      handleUrl(event.url);
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [isSignedIn]);
 
   if (!isAuthLoaded || !isUserLoaded) return null;
 
@@ -19,13 +50,79 @@ export default function AppLayout() {
 function MappingWrapper({ clerkId }: { clerkId?: string }) {
   const [timeoutReached, setTimeoutReached] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
+  const [isProcessingInvite, setIsProcessingInvite] = useState(false);
+  const acceptInvitation = useMutation(api.invitations.acceptInvitation);
+  const processedTokens = useRef(new Set<string>());
 
   const mappedUser = useQuery(
     api.users.getUserByClerkId,
     clerkId ? { clerkId } : "skip"
   );
+  const isWaitingForMapping = mappedUser === null || mappedUser === undefined || isProcessingInvite;
 
-  const isWaitingForMapping = mappedUser === null || mappedUser === undefined;
+  // Cleanup stale invitation tokens when user is already in a family
+  useEffect(() => {
+    if (mappedUser && mappedUser.familyId) {
+      SecureStore.deleteItemAsync("invitationToken").catch(() => null);
+    }
+  }, [mappedUser]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function acceptDeepLinkInvite() {
+      let token = await SecureStore.getItemAsync("invitationToken").catch(() => null);
+
+      if (!token) {
+        const url = await Linking.getInitialURL();
+        if (url) {
+          const parsed = Linking.parse(url);
+          token = typeof parsed.queryParams?.token === "string" ? parsed.queryParams.token : null;
+        }
+      }
+
+      if (!token || !isMounted || !mappedUser || mappedUser.familyId) return;
+      if (processedTokens.current.has(token)) return;
+      processedTokens.current.add(token);
+
+      setIsProcessingInvite(true);
+      try {
+        await acceptInvitation({ token });
+      } catch (error) {
+        console.error("Failed to accept invitation:", error);
+      } finally {
+        await SecureStore.deleteItemAsync("invitationToken").catch(() => null);
+        if (isMounted) setIsProcessingInvite(false);
+      }
+    }
+
+    acceptDeepLinkInvite();
+
+    const subscription = Linking.addEventListener("url", async (event) => {
+      if (!isMounted || !mappedUser || mappedUser.familyId) return;
+      const parsed = Linking.parse(event.url);
+      const token = typeof parsed.queryParams?.token === "string" ? parsed.queryParams.token : undefined;
+      if (token) {
+        if (processedTokens.current.has(token)) return;
+        processedTokens.current.add(token);
+
+        setIsProcessingInvite(true);
+        try {
+          await acceptInvitation({ token });
+        } catch (error) {
+          console.error("Failed to accept invitation from warm start:", error);
+        } finally {
+          await SecureStore.deleteItemAsync("invitationToken").catch(() => null);
+          if (isMounted) setIsProcessingInvite(false);
+        }
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      subscription.remove();
+    };
+  }, [acceptInvitation, mappedUser]);
 
   useEffect(() => {
     if (!isWaitingForMapping) {
@@ -78,10 +175,32 @@ function MappingWrapper({ clerkId }: { clerkId?: string }) {
     );
   }
 
-  return <Stack screenOptions={{ headerShown: false }} />;
+  const segments = useSegments();
+  const isOnboarding = segments.includes("create-family");
+
+  if (mappedUser && !mappedUser.familyId) {
+    if (!isOnboarding) {
+      return <Redirect href="/create-family" />;
+    }
+  } else if (mappedUser && mappedUser.familyId && isOnboarding) {
+    return <Redirect href="/" />;
+  }
+
+  return (
+    <View style={styles.appShell}>
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="event-editor" options={{ presentation: "modal" }} />
+        <Stack.Screen name="chats" />
+        <Stack.Screen name="chat/[threadId]" />
+      </Stack>
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
+  appShell: {
+    flex: 1,
+  },
   errorContainer: {
     flex: 1,
     backgroundColor: "#F5F2EB",

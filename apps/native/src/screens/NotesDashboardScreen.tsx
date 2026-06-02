@@ -58,6 +58,13 @@ const NotesDashboardScreen = () => {
           source={require("../assets/icons/logo2small.png")} // Replace with your logo image file
           style={styles.logo}
         />
+        <TouchableOpacity
+          accessibilityLabel="Einstellungen öffnen"
+          onPress={() => router.push("/settings" as Href)}
+          style={styles.settingsButton}
+        >
+          <Feather name="settings" size={24} color="#fff" />
+        </TouchableOpacity>
       </View>
 
       <View style={styles.yourNotesContainer}>
@@ -212,6 +219,14 @@ const styles = StyleSheet.create({
     fontSize: RFValue(15),
     fontFamily: "MMedium",
     marginLeft: 10,
+  },
+  settingsButton: {
+    position: "absolute",
+    right: 16,
+    minWidth: 48,
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
   },
   switchContainer: {
     position: "absolute",

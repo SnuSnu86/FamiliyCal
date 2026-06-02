@@ -16,6 +16,8 @@ type ClerkUserWebhookData = {
   image_url?: string | null;
   primary_email_address_id?: string | null;
   email_addresses?: ClerkEmailAddress[];
+  public_metadata?: Record<string, unknown> | null;
+  unsafe_metadata?: Record<string, unknown> | null;
 };
 
 let globalConvexClient: ConvexHttpClient | null = null;
@@ -45,6 +47,15 @@ function getPrimaryEmail(data: ClerkUserWebhookData) {
 function getDisplayName(data: ClerkUserWebhookData) {
   const fullName = [data.first_name, data.last_name].filter(Boolean).join(" ");
   return fullName || data.username || undefined;
+}
+
+function getInvitationToken(data: ClerkUserWebhookData) {
+  const publicToken = data.public_metadata?.invitationToken;
+  const unsafeToken = data.unsafe_metadata?.invitationToken;
+
+  if (typeof publicToken === "string" && publicToken.trim()) return publicToken;
+  if (typeof unsafeToken === "string" && unsafeToken.trim()) return unsafeToken;
+  return undefined;
 }
 
 export async function POST(request: NextRequest) {
@@ -88,6 +99,7 @@ export async function POST(request: NextRequest) {
         email,
         name: getDisplayName(data),
         imageUrl: data.image_url ?? undefined,
+        invitationToken: getInvitationToken(data),
       });
     }
 

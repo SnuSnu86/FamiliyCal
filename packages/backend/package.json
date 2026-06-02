@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "convex dev",
     "setup": "convex dev --until-success",
-    "typecheck": "tsc --noEmit -p convex"
+    "typecheck": "node ../../node_modules/typescript/bin/tsc --noEmit -p convex",
+    "test": "pnpm run typecheck"
   },
   "author": "",
   "license": "ISC",

@@ -13,12 +13,37 @@ function assertValidClerkUser(args: { clerkId: string; email?: string }) {
   }
 }
 
+async function findPendingInvitation(ctx: any, args: { invitationToken?: string; email: string }) {
+  if (args.invitationToken?.trim()) {
+    const invitation = await ctx.db
+      .query("invitations")
+      .withIndex("by_token", (q: any) => q.eq("token", args.invitationToken))
+      .unique();
+
+    if (invitation && invitation.status === "pending") {
+      // Enforce email check if specified in invitation
+      if (!invitation.email || invitation.email === args.email.trim().toLowerCase()) {
+        return invitation;
+      }
+    }
+  }
+
+  const normalizedEmail = args.email.trim().toLowerCase();
+  const invitations = await ctx.db
+    .query("invitations")
+    .withIndex("by_email", (q: any) => q.eq("email", normalizedEmail))
+    .collect();
+
+  return invitations.find((invitation: any) => invitation.status === "pending") ?? null;
+}
+
 export const upsertUserFromWebhook = mutation({
   args: {
     clerkId: v.string(),
     email: v.string(),
     name: v.optional(v.string()),
     imageUrl: v.optional(v.string()),
+    invitationToken: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     assertValidClerkUser(args);
@@ -30,20 +55,43 @@ export const upsertUserFromWebhook = mutation({
 
     const normalizedUser = {
       clerkId: args.clerkId,
-      email: args.email,
+      email: args.email.trim().toLowerCase(),
       name: args.name,
       imageUrl: args.imageUrl,
     };
 
     if (existingUser) {
+      if (args.invitationToken && existingUser.familyId) {
+        const invitation = await ctx.db
+          .query("invitations")
+          .withIndex("by_token", (q: any) => q.eq("token", args.invitationToken))
+          .unique();
+        if (invitation && invitation.familyId === existingUser.familyId) {
+          await ctx.db.patch(existingUser._id, normalizedUser);
+          return existingUser._id;
+        }
+        throw new ConvexError("User already belongs to a family");
+      }
       await ctx.db.patch(existingUser._id, normalizedUser);
       return existingUser._id;
     }
 
-    return await ctx.db.insert("users", {
-      ...normalizedUser,
-      role: DEFAULT_ROLE,
+    const invitation = await findPendingInvitation(ctx, {
+      invitationToken: args.invitationToken,
+      email: args.email,
     });
+
+    const userId = await ctx.db.insert("users", {
+      ...normalizedUser,
+      familyId: invitation?.familyId,
+      role: invitation?.role ?? DEFAULT_ROLE,
+    });
+
+    if (invitation) {
+      await ctx.db.patch(invitation._id, { status: "accepted" });
+    }
+
+    return userId;
   },
 });
 
@@ -58,6 +106,26 @@ export const getUserByClerkId = query({
       .query("users")
       .withIndex("by_clerkId", (q) => q.eq("clerkId", clerkId))
       .unique();
+  },
+});
+
+export const listFamilyMembers = query({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) throw new ConvexError("Authentication required");
+
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_clerkId", (q) => q.eq("clerkId", identity.subject))
+      .unique();
+
+    if (!user?.familyId) return [];
+
+    return await ctx.db
+      .query("users")
+      .withIndex("by_familyId", (q) => q.eq("familyId", user.familyId))
+      .collect();
   },
 });
 
