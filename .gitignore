@@ -1,0 +1,57 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+node_modules
+.pnp
+.pnp.js
+
+# testing
+coverage
+
+# next.js
+.next/
+.swc/
+out/
+build
+
+# expo
+.expo
+
+# misc
+.DS_Store
+*.pem
+dist
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local env files
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env
+.env.development
+.env.test
+.env.production
+
+# turbo
+.turbo
+**/.turbo/
+
+# convex generated output and local deployment state
+convex/_generated/
+packages/backend/convex/_generated/
+packages/backend/.convex/local/
+
+# AI agent / development helper directories
+.agent/
+.agents/
+.claude/
+.cline/
+.cursor/
+_bmad/
+_bmad-output/
+nul

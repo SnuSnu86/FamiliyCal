@@ -1,0 +1,43 @@
+{
+  "name": "@apps/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@clerk/nextjs": "^7.2.3",
+    "@headlessui/react": "^2.2.10",
+    "@heroicons/react": "^2.2.0",
+    "@packages/backend": "workspace:*",
+    "@radix-ui/react-avatar": "^1.1.11",
+    "@radix-ui/react-dropdown-menu": "^2.1.16",
+    "@radix-ui/react-slot": "^1.2.4",
+    "class-variance-authority": "^0.7.1",
+    "convex": "1.39.1",
+    "lucide-react": "^1.8.0",
+    "next": "^16.2.4",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "tailwind-merge": "^3.5.0",
+    "@packages/shared": "workspace:*",
+    "@packages/ui": "workspace:*"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.3.5",
+    "@tailwindcss/forms": "0.5.11",
+    "@tailwindcss/postcss": "4.2.4",
+    "@types/node": "^25.6.0",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "eslint": "^9.39.4",
+    "eslint-config-next": "16.2.4",
+    "postcss": "8.5.10",
+    "tailwindcss": "4.2.4",
+    "typescript": "5.5.3"
+  }
+}

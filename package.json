@@ -1,0 +1,27 @@
+{
+  "name": "familycal",
+  "private": true,
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "clean": "turbo run clean && node -e \"require('fs').rmSync('node_modules', {recursive:true,force:true})\"",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\" --ignore-path .gitignore",
+    "test": "turbo run test",
+    "verify-story-1-1": "node scripts/verify-story-1-1.mjs",
+    "verify-story-1-2": "node scripts/verify-story-1-2.mjs",
+    "preinstall": "npx only-allow pnpm"
+  },
+  "devDependencies": {
+    "prettier": "3.8.3",
+    "turbo": "2.9.6"
+  },
+  "engines": {
+    "node": ">=20.20.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "packageManager": "pnpm@10.33.0"
+}
