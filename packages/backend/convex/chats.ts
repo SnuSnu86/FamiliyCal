@@ -2,6 +2,8 @@ import { internal } from "./_generated/api";
 import { mutation, query } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { type Auth } from "convex/server";
+import { recordActivity } from "./activityFeed";
+import { checkPermanentStorageUpload } from "./storageQuotas";
 
 const GROUP_THREAD_TITLE = "Familienchat";
 const MESSAGE_LIMIT = 100;
@@ -39,7 +41,7 @@ function assertThreadParticipant(thread: { type: "group" | "direct" | "event"; p
 }
 
 async function getThreadForUser(ctx: { auth: Auth; db: any }, threadId: any) {
-  const { userId, familyId } = await requireUser(ctx);
+  const { userId, user, familyId } = await requireUser(ctx);
   const thread = await ctx.db.get(threadId);
 
   if (!thread || thread.familyId !== familyId) {
@@ -47,7 +49,7 @@ async function getThreadForUser(ctx: { auth: Auth; db: any }, threadId: any) {
   }
 
   assertThreadParticipant(thread, userId);
-  return { thread, userId, familyId };
+  return { thread, userId, user, familyId };
 }
 
 async function requireCalendarEventForUser(ctx: { auth: Auth; db: any }, calendarEventId: any) {
@@ -69,6 +71,24 @@ async function listFamilyMemberIds(ctx: { db: any }, familyId: any) {
 
   return members.map((member: any) => member.clerkId);
 }
+
+export async function checkStorageQuota(
+  ctx: { db: any; storage: any },
+  user: any,
+  familyId: any,
+  storageId?: string,
+  fileSize?: number
+) {
+  await checkPermanentStorageUpload(ctx, user, familyId, storageId, fileSize);
+}
+
+export const generateUploadUrl = mutation({
+  args: {},
+  handler: async (ctx) => {
+    await requireUser(ctx);
+    return await ctx.storage.generateUploadUrl();
+  },
+});
 
 async function ensureEventThreadRecord(ctx: { auth: Auth; db: any }, calendarEventId: any) {
   const { event, userId, familyId } = await requireCalendarEventForUser(ctx, calendarEventId);
@@ -132,10 +152,19 @@ export const listThreads = query({
   args: {},
   handler: async (ctx) => {
     const { userId, familyId } = await requireUser(ctx);
-    const threads = await ctx.db
+    const groupThreads = await ctx.db
       .query("chatThreads")
-      .withIndex("by_familyId", (q) => q.eq("familyId", familyId))
+      .withIndex("by_familyId_type", (q) => q.eq("familyId", familyId).eq("type", "group"))
       .collect();
+    const directThreads = await ctx.db
+      .query("chatThreads")
+      .withIndex("by_familyId_type", (q) => q.eq("familyId", familyId).eq("type", "direct"))
+      .collect();
+    const eventThreads = await ctx.db
+      .query("chatThreads")
+      .withIndex("by_familyId_type", (q) => q.eq("familyId", familyId).eq("type", "event"))
+      .collect();
+    const threads = [...groupThreads, ...directThreads, ...eventThreads];
 
     return threads
       .filter((thread) => thread.type === "group" || thread.participantIds.includes(userId))
@@ -184,6 +213,14 @@ export const getOrCreateDirectThread = mutation({
   },
 });
 
+export const getThread = query({
+  args: { threadId: v.id("chatThreads") },
+  handler: async (ctx, args) => {
+    const { thread } = await getThreadForUser(ctx, args.threadId);
+    return thread;
+  },
+});
+
 export const ensureEventThread = mutation({
   args: { calendarEventId: v.id("calendarEvents") },
   handler: async (ctx, args) => {
@@ -218,7 +255,16 @@ export const listEventMessages = query({
       .order("desc")
       .take(MESSAGE_LIMIT);
 
-    return messages.reverse();
+    const resolvedMessages = await Promise.all(
+      messages.map(async (msg) => {
+        if (msg.storageId) {
+          const fileUrl = await ctx.storage.getUrl(msg.storageId);
+          return { ...msg, fileUrl: fileUrl ?? undefined };
+        }
+        return msg;
+      })
+    );
+    return resolvedMessages.reverse();
   },
 });
 
@@ -232,26 +278,46 @@ export const listMessages = query({
       .order("desc")
       .take(MESSAGE_LIMIT);
 
-    return messages.reverse();
+    const resolvedMessages = await Promise.all(
+      messages.map(async (msg) => {
+        if (msg.storageId) {
+          const fileUrl = await ctx.storage.getUrl(msg.storageId);
+          return { ...msg, fileUrl: fileUrl ?? undefined };
+        }
+        return msg;
+      })
+    );
+    return resolvedMessages.reverse();
   },
 });
 
 export const sendEventComment = mutation({
-  args: { calendarEventId: v.id("calendarEvents"), body: v.string() },
+  args: {
+    calendarEventId: v.id("calendarEvents"),
+    body: v.string(),
+    storageId: v.optional(v.string()),
+    fileName: v.optional(v.string()),
+    fileType: v.optional(v.string()),
+    fileSize: v.optional(v.number()),
+  },
   handler: async (ctx, args) => {
     const thread = await ensureEventThreadRecord(ctx, args.calendarEventId);
     if (!thread) throw appError("THREAD_CREATE_FAILED", "Der Kommentar-Thread konnte nicht erstellt werden.");
 
-    const { userId, familyId } = await requireUser(ctx);
+    const { userId, user, familyId } = await requireUser(ctx);
     if (thread.familyId !== familyId || thread.calendarEventId !== args.calendarEventId) {
       throw appError("THREAD_ACCESS_DENIED", "Dieser Kommentarbereich gehört nicht zu deinem Termin.");
     }
 
     const body = args.body.trim();
-    if (!body) throw appError("EMPTY_MESSAGE", "Bitte schreibe einen Kommentar, bevor du sendest.");
+    if (!body && !args.storageId) {
+      throw appError("EMPTY_MESSAGE", "Bitte schreibe einen Kommentar, bevor du sendest.");
+    }
     if (body.length > MAX_MESSAGE_LENGTH) {
       throw appError("MESSAGE_TOO_LONG", "Der Kommentar ist zu lang. Bitte kürze ihn etwas.");
     }
+
+    await checkStorageQuota(ctx, user, familyId, args.storageId, args.fileSize);
 
     const now = Date.now();
     const messageId = await ctx.db.insert("chatMessages", {
@@ -260,12 +326,29 @@ export const sendEventComment = mutation({
       senderId: userId,
       body,
       createdAt: now,
+      storageId: args.storageId,
+      fileName: args.fileName,
+      fileType: args.fileType,
+      fileSize: args.fileSize,
     });
+
+    const previewText = body || (args.fileType?.startsWith("image/") ? "[Bild]" : `[Datei: ${args.fileName || "Anhang"}]`);
 
     await ctx.db.patch(thread._id, {
       updatedAt: now,
       lastMessageAt: now,
-      lastMessagePreview: body.length > 80 ? `${body.slice(0, 77)}…` : body,
+      lastMessagePreview: previewText.length > 80 ? `${previewText.slice(0, 77)}…` : previewText,
+    });
+
+    await recordActivity(ctx, {
+      familyId,
+      actorId: userId,
+      type: "event_comment",
+      entityType: "calendarEvent",
+      entityId: String(args.calendarEventId),
+      summary: "Neuer Kommentar zu einem Termin",
+      metadata: args.fileSize ? { fileSize: args.fileSize } : undefined,
+      createdAt: now,
     });
 
     await ctx.scheduler.runAfter(0, internal.push.sendChatMessagePush, {
@@ -274,7 +357,7 @@ export const sendEventComment = mutation({
       threadId: thread._id,
       messageId,
       participantIds: await listFamilyMemberIds(ctx, familyId),
-      preview: body,
+      preview: previewText,
     });
 
     return await ctx.db.get(messageId);
@@ -282,14 +365,25 @@ export const sendEventComment = mutation({
 });
 
 export const sendMessage = mutation({
-  args: { threadId: v.id("chatThreads"), body: v.string() },
+  args: {
+    threadId: v.id("chatThreads"),
+    body: v.string(),
+    storageId: v.optional(v.string()),
+    fileName: v.optional(v.string()),
+    fileType: v.optional(v.string()),
+    fileSize: v.optional(v.number()),
+  },
   handler: async (ctx, args) => {
-    const { thread, userId, familyId } = await getThreadForUser(ctx, args.threadId);
+    const { thread, userId, user, familyId } = await getThreadForUser(ctx, args.threadId);
     const body = args.body.trim();
-    if (!body) throw appError("EMPTY_MESSAGE", "Bitte schreibe eine Nachricht, bevor du sendest.");
+    if (!body && !args.storageId) {
+      throw appError("EMPTY_MESSAGE", "Bitte schreibe eine Nachricht, bevor du sendest.");
+    }
     if (body.length > MAX_MESSAGE_LENGTH) {
       throw appError("MESSAGE_TOO_LONG", "Die Nachricht ist zu lang. Bitte kürze sie etwas.");
     }
+
+    await checkStorageQuota(ctx, user, familyId, args.storageId, args.fileSize);
 
     const now = Date.now();
     const messageId = await ctx.db.insert("chatMessages", {
@@ -298,21 +392,42 @@ export const sendMessage = mutation({
       senderId: userId,
       body,
       createdAt: now,
+      storageId: args.storageId,
+      fileName: args.fileName,
+      fileType: args.fileType,
+      fileSize: args.fileSize,
     });
+
+    const previewText = body || (args.fileType?.startsWith("image/") ? "[Bild]" : `[Datei: ${args.fileName || "Anhang"}]`);
 
     await ctx.db.patch(args.threadId, {
       updatedAt: now,
       lastMessageAt: now,
-      lastMessagePreview: body.length > 80 ? `${body.slice(0, 77)}…` : body,
+      lastMessagePreview: previewText.length > 80 ? `${previewText.slice(0, 77)}…` : previewText,
     });
+
+    if (thread.type !== "direct") {
+      await recordActivity(ctx, {
+        familyId,
+        actorId: userId,
+        type: "chat_message",
+        entityType: "chatThread",
+        entityId: String(args.threadId),
+        summary: "Neue Nachricht im Familienchat",
+        metadata: args.fileSize ? { fileSize: args.fileSize } : undefined,
+        createdAt: now,
+      });
+    }
 
     await ctx.scheduler.runAfter(0, internal.push.sendChatMessagePush, {
       familyId,
       senderId: userId,
       threadId: args.threadId,
       messageId,
-      participantIds: thread.participantIds,
-      preview: body,
+      participantIds: thread.type === "group" || thread.type === "event"
+        ? await listFamilyMemberIds(ctx, familyId)
+        : thread.participantIds,
+      preview: previewText,
     });
 
     return await ctx.db.get(messageId);

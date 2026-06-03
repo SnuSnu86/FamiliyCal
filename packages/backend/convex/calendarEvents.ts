@@ -3,6 +3,7 @@ import { internal } from "./_generated/api";
 import { mutation } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { type Auth } from "convex/server";
+import { recordActivity } from "./activityFeed";
 
 async function requireUserId({ auth }: { auth: Auth }) {
   const userId = (await auth.getUserIdentity())?.subject ?? null;
@@ -168,6 +169,15 @@ export const syncCalendarEvent = mutation({
       assertValidDateRange(patch.startDate, patch.endDate);
       await assertNoResourceConflict(ctx, { ...patch, id: String(existing._id), clientId: patch.clientId }, existing._id);
       await ctx.db.patch(existing._id, patch);
+      await recordActivity(ctx, {
+        familyId: args.familyId,
+        actorId: userId,
+        type: "event_comment",
+        entityType: "calendarEvent",
+        entityId: String(existing._id),
+        summary: "Kalendertermin aktualisiert",
+        createdAt: now,
+      });
       const serverRecord = await ctx.db.get(existing._id);
       return { serverId: existing._id, serverRecord, mergedFields };
     }
@@ -176,6 +186,15 @@ export const syncCalendarEvent = mutation({
 
     const eventId = await ctx.db.insert("calendarEvents", {
       ...localRecord,
+      createdAt: now,
+    });
+    await recordActivity(ctx, {
+      familyId: args.familyId,
+      actorId: userId,
+      type: "event_comment",
+      entityType: "calendarEvent",
+      entityId: String(eventId),
+      summary: "Kalendertermin erstellt",
       createdAt: now,
     });
     const serverRecord = await ctx.db.get(eventId);

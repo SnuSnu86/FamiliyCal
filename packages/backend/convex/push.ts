@@ -168,3 +168,103 @@ export const sendChatMessagePush = internalAction({
     return { sent };
   },
 });
+
+async function dispatchPushNotifications(
+  tokens: Array<{ expoPushToken: string }>,
+  title: string,
+  body: string,
+  data: Record<string, unknown>
+): Promise<{ sent: number }> {
+  if (tokens.length === 0) return { sent: 0 };
+
+  const messages = tokens.map(({ expoPushToken }: { expoPushToken: string }) => ({
+    to: expoPushToken,
+    title,
+    body: body.length > 80 ? `${body.slice(0, 77)}…` : body,
+    data,
+  }));
+
+  let sent = 0;
+  for (const batch of chunk(messages, EXPO_BATCH_SIZE)) {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const accessToken = process.env.EXPO_ACCESS_TOKEN;
+    if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+
+    try {
+      const response = await fetch(EXPO_PUSH_ENDPOINT, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(batch),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => "");
+        console.warn("Expo push HTTP error", { status: response.status, body: errorBody });
+        continue;
+      }
+
+      const result = (await response.json().catch(() => null)) as
+        | { data?: Array<{ status?: string; message?: string; details?: unknown }> }
+        | null;
+      const tickets = result?.data ?? [];
+      const failedTickets = tickets.filter((ticket) => ticket?.status === "error");
+      if (failedTickets.length > 0) {
+        console.warn("Expo push ticket errors", failedTickets);
+      }
+      sent += batch.length - failedTickets.length;
+    } catch (error) {
+      console.warn("Expo push dispatch failed", error);
+    }
+  }
+
+  return { sent };
+}
+
+export const sendMemoUpdatedPush = internalAction({
+  args: {
+    familyId: v.id("families"),
+    creatorId: v.string(),
+    memoId: v.id("memos"),
+    title: v.string(),
+  },
+  handler: async (ctx, args): Promise<{ sent: number }> => {
+    const tokens = await ctx.runQuery(internal.push.listOtherFamilyTokens, {
+      familyId: args.familyId,
+      creatorId: args.creatorId,
+    });
+    return await dispatchPushNotifications(tokens, "Memo aktualisiert", args.title.trim(), { memoId: args.memoId });
+  },
+});
+
+export const sendListUpdatedPush = internalAction({
+  args: {
+    familyId: v.id("families"),
+    creatorId: v.string(),
+    listId: v.id("lists"),
+    title: v.string(),
+  },
+  handler: async (ctx, args): Promise<{ sent: number }> => {
+    const tokens = await ctx.runQuery(internal.push.listOtherFamilyTokens, {
+      familyId: args.familyId,
+      creatorId: args.creatorId,
+    });
+    return await dispatchPushNotifications(tokens, "Liste aktualisiert", args.title.trim(), { listId: args.listId });
+  },
+});
+
+export const sendAlbumUpdatedPush = internalAction({
+  args: {
+    familyId: v.id("families"),
+    creatorId: v.string(),
+    albumId: v.id("albums"),
+    name: v.string(),
+  },
+  handler: async (ctx, args): Promise<{ sent: number }> => {
+    const tokens = await ctx.runQuery(internal.push.listOtherFamilyTokens, {
+      familyId: args.familyId,
+      creatorId: args.creatorId,
+    });
+    return await dispatchPushNotifications(tokens, "Album aktualisiert", args.name.trim(), { albumId: args.albumId });
+  },
+});
+

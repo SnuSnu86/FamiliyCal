@@ -109,6 +109,9 @@ function CalendarDashboardScreen({ events }: Props) {
           </Text>
         </View>
         <View style={styles.headerActions}>
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel="Memos öffnen" style={styles.chatButton} onPress={() => router.push("/memos" as Href)}>
+            <Text style={styles.chatButtonText}>Memos</Text>
+          </TouchableOpacity>
           <TouchableOpacity accessibilityRole="button" accessibilityLabel="Chats öffnen" style={styles.chatButton} onPress={() => router.push("/chats" as Href)}>
             <Text style={styles.chatButtonText}>Chats</Text>
           </TouchableOpacity>

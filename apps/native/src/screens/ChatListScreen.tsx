@@ -2,7 +2,7 @@ import { useUser } from "@clerk/expo";
 import { api } from "@packages/backend/convex/_generated/api";
 import { useMutation, useQuery } from "convex/react";
 import { type Href, useRouter } from "expo-router";
-import React, { useEffect } from "react";
+import React, { useEffect, useRef } from "react";
 import { FlatList, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
 export default function ChatListScreen() {
@@ -12,17 +12,32 @@ export default function ChatListScreen() {
   const threads = useQuery(api.chats.listThreads);
   const ensureGroupThread = useMutation(api.chats.ensureFamilyGroupThread);
   const getOrCreateDirectThread = useMutation(api.chats.getOrCreateDirectThread);
+  const groupCreatingRef = useRef(false);
 
   useEffect(() => {
-    ensureGroupThread({}).catch((error) => console.warn("Group chat setup failed", error));
-  }, [ensureGroupThread]);
+    if (threads !== undefined) {
+      const hasGroup = threads.some((t) => t.type === "group");
+      if (!hasGroup && !groupCreatingRef.current) {
+        groupCreatingRef.current = true;
+        ensureGroupThread({})
+          .catch((error) => {
+            console.warn("Group chat setup failed", error);
+            groupCreatingRef.current = false;
+          });
+      }
+    }
+  }, [threads, ensureGroupThread]);
 
   const groupThread = threads?.find((thread) => thread.type === "group");
   const directThreads = threads?.filter((thread) => thread.type === "direct") ?? [];
 
   const openGroup = async () => {
-    const thread = groupThread ?? await ensureGroupThread({});
-    if (thread?._id) router.push(`/chat/${thread._id}` as Href);
+    try {
+      const thread = groupThread ?? await ensureGroupThread({});
+      if (thread?._id) router.push(`/chat/${thread._id}` as Href);
+    } catch (error) {
+      console.warn("Failed to open group chat", error);
+    }
   };
 
   const openDirect = async (targetUserId: string) => {

@@ -45,6 +45,7 @@ export default defineSchema({
       v.literal("ROLE-005"),
       v.literal("ROLE-006")
     ),
+    storageLimit: v.optional(v.number()),
   })
     .index("by_clerkId", ["clerkId"])
     .index("by_familyId", ["familyId"]),
@@ -55,6 +56,55 @@ export default defineSchema({
     content: v.string(),
     summary: v.optional(v.string()),
   }).index("by_userId", ["userId"]),
+
+  memos: defineTable({
+    familyId: v.id("families"),
+    creatorId: v.string(),
+    clientId: v.string(),
+    title: v.string(),
+    content: v.string(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_familyId", ["familyId"])
+    .index("by_familyId_and_clientId", ["familyId", "clientId"]),
+
+  lists: defineTable({
+    familyId: v.id("families"),
+    creatorId: v.string(),
+    clientId: v.string(),
+    title: v.string(),
+    items: v.array(
+      v.object({
+        text: v.string(),
+        completed: v.boolean(),
+      })
+    ),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_familyId", ["familyId"])
+    .index("by_familyId_and_clientId", ["familyId", "clientId"]),
+
+  albums: defineTable({
+    familyId: v.id("families"),
+    creatorId: v.string(),
+    clientId: v.string(),
+    name: v.string(),
+    photos: v.array(
+      v.object({
+        storageId: v.string(),
+        fileSize: v.number(),
+        uploadedAt: v.number(),
+        uploadedBy: v.optional(v.string()),
+      })
+    ),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_familyId", ["familyId"])
+    .index("by_creatorId", ["creatorId"])
+    .index("by_familyId_and_clientId", ["familyId", "clientId"]),
 
   calendarEvents: defineTable({
     familyId: v.id("families"),
@@ -117,7 +167,41 @@ export default defineSchema({
     body: v.string(),
     createdAt: v.number(),
     deletedAt: v.optional(v.number()),
-  }).index("by_threadId_createdAt", ["threadId", "createdAt"]),
+    storageId: v.optional(v.string()),
+    fileName: v.optional(v.string()),
+    fileType: v.optional(v.string()),
+    fileSize: v.optional(v.number()),
+  })
+    .index("by_threadId_createdAt", ["threadId", "createdAt"])
+    .index("by_senderId", ["senderId"]),
+
+  activityFeedEntries: defineTable({
+    familyId: v.id("families"),
+    actorId: v.string(),
+    type: v.union(
+      v.literal("chat_message"),
+      v.literal("event_comment"),
+      v.literal("memo_updated"),
+      v.literal("list_updated"),
+      v.literal("album_updated"),
+      v.literal("quota_updated")
+    ),
+    entityType: v.union(
+      v.literal("chatThread"),
+      v.literal("calendarEvent"),
+      v.literal("memo"),
+      v.literal("list"),
+      v.literal("album"),
+      v.literal("user"),
+      v.literal("family")
+    ),
+    entityId: v.optional(v.string()),
+    summary: v.string(),
+    metadata: v.optional(v.any()),
+    createdAt: v.number(),
+  })
+    .index("by_familyId_createdAt", ["familyId", "createdAt"])
+    .index("by_familyId_type_createdAt", ["familyId", "type", "createdAt"]),
 
   pushTokens: defineTable({
     userId: v.string(),

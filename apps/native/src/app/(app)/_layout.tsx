@@ -1,11 +1,44 @@
 import { useAuth, useUser } from "@clerk/expo";
 import { api } from "@packages/backend/convex/_generated/api";
-import { useMutation, useQuery } from "convex/react";
+import { useConvex, useMutation, useQuery } from "convex/react";
 import * as Linking from "expo-linking";
 import { Redirect, Stack, useSegments } from "expo-router";
 import * as SecureStore from "expo-secure-store";
+import { ConvexError } from "convex/values";
 import React, { useEffect, useRef, useState } from "react";
-import { StyleSheet, View, Text, TouchableOpacity, ActivityIndicator } from "react-native";
+import { StyleSheet, View, Text, TouchableOpacity, ActivityIndicator, Platform, Alert } from "react-native";
+
+const setInvitationToken = async (token: string) => {
+  if (Platform.OS === "web") {
+    try {
+      localStorage.setItem("invitationToken", token);
+    } catch {}
+  } else {
+    await SecureStore.setItemAsync("invitationToken", token).catch(() => null);
+  }
+};
+
+const getInvitationToken = async (): Promise<string | null> => {
+  if (Platform.OS === "web") {
+    try {
+      return localStorage.getItem("invitationToken");
+    } catch {
+      return null;
+    }
+  } else {
+    return await SecureStore.getItemAsync("invitationToken").catch(() => null);
+  }
+};
+
+const deleteInvitationToken = async () => {
+  if (Platform.OS === "web") {
+    try {
+      localStorage.removeItem("invitationToken");
+    } catch {}
+  } else {
+    await SecureStore.deleteItemAsync("invitationToken").catch(() => null);
+  }
+};
 
 export default function AppLayout() {
   const { isLoaded: isAuthLoaded, isSignedIn } = useAuth();
@@ -17,22 +50,22 @@ export default function AppLayout() {
       if (isSignedIn) return;
       const url = await Linking.getInitialURL();
       if (url) {
-        handleUrl(url);
+        await handleUrl(url);
       }
     }
 
-    function handleUrl(url: string) {
+    async function handleUrl(url: string) {
       if (isSignedIn) return;
       const parsed = Linking.parse(url);
       const token = typeof parsed.queryParams?.token === "string" ? parsed.queryParams.token : undefined;
       if (token) {
-        SecureStore.setItemAsync("invitationToken", token).catch(() => null);
+        await setInvitationToken(token);
       }
     }
 
     handleInitialUrl();
-    const subscription = Linking.addEventListener("url", (event) => {
-      handleUrl(event.url);
+    const subscription = Linking.addEventListener("url", async (event) => {
+      await handleUrl(event.url);
     });
 
     return () => {
@@ -48,11 +81,29 @@ export default function AppLayout() {
 }
 
 function MappingWrapper({ clerkId }: { clerkId?: string }) {
+  const convexClient = useConvex();
   const [timeoutReached, setTimeoutReached] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
   const [isProcessingInvite, setIsProcessingInvite] = useState(false);
   const acceptInvitation = useMutation(api.invitations.acceptInvitation);
   const processedTokens = useRef(new Set<string>());
+  const isComponentMounted = useRef(true);
+  const initialUrlChecked = useRef(false);
+
+  // Start background auto-sync for Memos, Lists, and Albums
+  useEffect(() => {
+    if (clerkId === undefined) return;
+    const { startMemoListAutoSync } = require("../../sync/memoListSync");
+    const { database } = require("../../database");
+    const unsubscribe = startMemoListAutoSync({ db: database, convexClient });
+    return () => unsubscribe();
+  }, [clerkId, convexClient]);
+
+  useEffect(() => {
+    return () => {
+      isComponentMounted.current = false;
+    };
+  }, []);
 
   const mappedUser = useQuery(
     api.users.getUserByClerkId,
@@ -63,15 +114,13 @@ function MappingWrapper({ clerkId }: { clerkId?: string }) {
   // Cleanup stale invitation tokens when user is already in a family
   useEffect(() => {
     if (mappedUser && mappedUser.familyId) {
-      SecureStore.deleteItemAsync("invitationToken").catch(() => null);
+      deleteInvitationToken().catch((error) => console.warn("Failed to delete invitation token", error));
     }
   }, [mappedUser]);
 
   useEffect(() => {
-    let isMounted = true;
-
     async function acceptDeepLinkInvite() {
-      let token = await SecureStore.getItemAsync("invitationToken").catch(() => null);
+      let token = await getInvitationToken();
 
       if (!token) {
         const url = await Linking.getInitialURL();
@@ -81,25 +130,36 @@ function MappingWrapper({ clerkId }: { clerkId?: string }) {
         }
       }
 
-      if (!token || !isMounted || !mappedUser || mappedUser.familyId) return;
+      if (!token || !isComponentMounted.current || !mappedUser || mappedUser.familyId) return;
       if (processedTokens.current.has(token)) return;
       processedTokens.current.add(token);
 
       setIsProcessingInvite(true);
       try {
         await acceptInvitation({ token });
-      } catch (error) {
+      } catch (error: any) {
         console.error("Failed to accept invitation:", error);
+        const message = error instanceof ConvexError
+          ? error.message
+          : "Die Einladung konnte nicht geladen werden. Bitte überprüfe deine Internetverbindung.";
+        if (Platform.OS === "web") {
+          alert(`Fehler: ${message}`);
+        } else {
+          Alert.alert("Einladung fehlgeschlagen", message);
+        }
       } finally {
-        await SecureStore.deleteItemAsync("invitationToken").catch(() => null);
-        if (isMounted) setIsProcessingInvite(false);
+        await deleteInvitationToken();
+        if (isComponentMounted.current) setIsProcessingInvite(false);
       }
     }
 
-    acceptDeepLinkInvite();
+    if (!initialUrlChecked.current && mappedUser !== undefined) {
+      initialUrlChecked.current = true;
+      acceptDeepLinkInvite();
+    }
 
     const subscription = Linking.addEventListener("url", async (event) => {
-      if (!isMounted || !mappedUser || mappedUser.familyId) return;
+      if (!isComponentMounted.current || !mappedUser || mappedUser.familyId) return;
       const parsed = Linking.parse(event.url);
       const token = typeof parsed.queryParams?.token === "string" ? parsed.queryParams.token : undefined;
       if (token) {
@@ -109,17 +169,24 @@ function MappingWrapper({ clerkId }: { clerkId?: string }) {
         setIsProcessingInvite(true);
         try {
           await acceptInvitation({ token });
-        } catch (error) {
+        } catch (error: any) {
           console.error("Failed to accept invitation from warm start:", error);
+          const message = error instanceof ConvexError
+            ? error.message
+            : "Die Einladung konnte nicht geladen werden. Bitte überprüfe deine Internetverbindung.";
+          if (Platform.OS === "web") {
+            alert(`Fehler: ${message}`);
+          } else {
+            Alert.alert("Einladung fehlgeschlagen", message);
+          }
         } finally {
-          await SecureStore.deleteItemAsync("invitationToken").catch(() => null);
-          if (isMounted) setIsProcessingInvite(false);
+          await deleteInvitationToken();
+          if (isComponentMounted.current) setIsProcessingInvite(false);
         }
       }
     });
 
     return () => {
-      isMounted = false;
       subscription.remove();
     };
   }, [acceptInvitation, mappedUser]);

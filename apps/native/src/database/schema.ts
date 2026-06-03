@@ -1,7 +1,7 @@
 import { appSchema, tableSchema } from "@nozbe/watermelondb";
 
 export const schema = appSchema({
-  version: 1,
+  version: 2,
   tables: [
     tableSchema({
       name: "users",
@@ -12,6 +12,7 @@ export const schema = appSchema({
         { name: "image_url", type: "string", isOptional: true },
         { name: "family_id", type: "string", isOptional: true, isIndexed: true },
         { name: "role", type: "string", isOptional: true },
+        { name: "storage_limit", type: "number", isOptional: true },
       ],
     }),
     tableSchema({
@@ -29,6 +30,36 @@ export const schema = appSchema({
         { name: "title", type: "string" },
         { name: "content", type: "string" },
         { name: "summary", type: "string", isOptional: true },
+      ],
+    }),
+    tableSchema({
+      name: "memos",
+      columns: [
+        { name: "server_id", type: "string", isOptional: true, isIndexed: true },
+        { name: "family_id", type: "string", isIndexed: true },
+        { name: "creator_id", type: "string", isIndexed: true },
+        { name: "title", type: "string" },
+        { name: "content", type: "string" },
+      ],
+    }),
+    tableSchema({
+      name: "lists",
+      columns: [
+        { name: "server_id", type: "string", isOptional: true, isIndexed: true },
+        { name: "family_id", type: "string", isIndexed: true },
+        { name: "creator_id", type: "string", isIndexed: true },
+        { name: "title", type: "string" },
+        { name: "items", type: "string" },
+      ],
+    }),
+    tableSchema({
+      name: "albums",
+      columns: [
+        { name: "server_id", type: "string", isOptional: true, isIndexed: true },
+        { name: "family_id", type: "string", isIndexed: true },
+        { name: "creator_id", type: "string", isIndexed: true },
+        { name: "name", type: "string" },
+        { name: "photos", type: "string" },
       ],
     }),
     tableSchema({
