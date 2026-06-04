@@ -1,4 +1,5 @@
-import { checkStorageQuota } from "../../../../packages/backend/convex/chats";
+import { checkStorageQuota } from "./chats";
+import { ConvexError } from "convex/values";
 
 describe("checkStorageQuota", () => {
   let mockDb: any;
@@ -16,9 +17,13 @@ describe("checkStorageQuota", () => {
       get: jest.fn(),
       patch: jest.fn(),
       query: jest.fn().mockReturnValue(mockQuery),
+      system: {
+        get: jest.fn().mockResolvedValue({ size: 200 }),
+      },
     };
     mockStorage = {
       delete: jest.fn(),
+      getMetadata: jest.fn(),
     };
     mockCtx = {
       db: mockDb,
@@ -40,7 +45,7 @@ describe("checkStorageQuota", () => {
       storageUsed: 500,
     });
 
-    await checkStorageQuota(mockCtx, { clerkId: "user_1", storageLimit: 300 }, "family_1", "storage_1", 200);
+    await checkStorageQuota(mockCtx, { storageLimit: 300 }, "family_1", "storage_1", 200);
 
     expect(mockDb.get).toHaveBeenCalledWith("family_1");
     expect(mockDb.patch).toHaveBeenCalledWith("family_1", { storageUsed: 700 });
@@ -54,9 +59,13 @@ describe("checkStorageQuota", () => {
       storageUsed: 900,
     });
 
-    await expect(
-      checkStorageQuota(mockCtx, { clerkId: "user_1", storageLimit: 300 }, "family_1", "storage_1", 200)
-    ).rejects.toMatchObject({ data: expect.objectContaining({ code: "STORAGE_LIMIT_EXCEEDED" }) });
+    try {
+      await checkStorageQuota(mockCtx, { storageLimit: 300 }, "family_1", "storage_1", 200);
+      throw new Error("Should have thrown STORAGE_LIMIT_EXCEEDED");
+    } catch (error: any) {
+      expect(error).toBeInstanceOf(ConvexError);
+      expect(error.data.code).toBe("STORAGE_LIMIT_EXCEEDED");
+    }
 
     expect(mockDb.get).toHaveBeenCalledWith("family_1");
     expect(mockStorage.delete).toHaveBeenCalledWith("storage_1");
@@ -70,42 +79,16 @@ describe("checkStorageQuota", () => {
       storageUsed: 500,
     });
 
-    await expect(
-      checkStorageQuota(mockCtx, { clerkId: "user_1", storageLimit: 100 }, "family_1", "storage_1", 200)
-    ).rejects.toMatchObject({ data: expect.objectContaining({ code: "USER_LIMIT_EXCEEDED" }) });
+    try {
+      await checkStorageQuota(mockCtx, { storageLimit: 100 }, "family_1", "storage_1", 200);
+      throw new Error("Should have thrown USER_LIMIT_EXCEEDED");
+    } catch (error: any) {
+      expect(error).toBeInstanceOf(ConvexError);
+      expect(error.data.code).toBe("USER_LIMIT_EXCEEDED");
+    }
 
     expect(mockDb.get).toHaveBeenCalledWith("family_1");
     expect(mockStorage.delete).toHaveBeenCalledWith("storage_1");
     expect(mockDb.patch).not.toHaveBeenCalled();
-  });
-
-  test("checks existing user usage plus the new file size", async () => {
-    const chatQuery = {
-      withIndex: jest.fn().mockReturnThis(),
-      collect: jest.fn().mockResolvedValue([{ fileSize: 90 }]),
-    };
-    const albumQuery = {
-      withIndex: jest.fn().mockReturnThis(),
-      collect: jest.fn().mockResolvedValue([]),
-    };
-    const allAlbumsQuery = {
-      collect: jest.fn().mockResolvedValue([]),
-    };
-
-    mockDb.get.mockResolvedValue({
-      _id: "family_1",
-      storageQuota: 1000,
-      storageUsed: 100,
-    });
-    mockDb.query
-      .mockReturnValueOnce(chatQuery)
-      .mockReturnValueOnce(albumQuery)
-      .mockReturnValueOnce(allAlbumsQuery)
-      .mockReturnValueOnce({ filter: jest.fn().mockReturnThis(), first: jest.fn().mockResolvedValue(null) })
-      .mockReturnValueOnce({ collect: jest.fn().mockResolvedValue([]) });
-
-    await expect(
-      checkStorageQuota(mockCtx, { clerkId: "user_1", storageLimit: 100 }, "family_1", "storage_1", 20)
-    ).rejects.toMatchObject({ data: expect.objectContaining({ code: "USER_LIMIT_EXCEEDED" }) });
   });
 });

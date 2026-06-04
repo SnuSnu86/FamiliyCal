@@ -10,7 +10,22 @@ export function assertValidPermanentFileSize(size: number) {
   }
 }
 
-export async function getUserStorageUsed(ctx: { db: any }, userId: string): Promise<number> {
+// Resolve the authoritative, server-side byte size of a stored file. A
+// client-supplied size must never be trusted: it is the source of a quota
+// bypass. Returns null when the file/metadata cannot be verified.
+async function resolveStoredFileSize(ctx: { db: any }, storageId: string): Promise<number | null> {
+  const metadata = await ctx.db.system.get(storageId);
+  if (!metadata || typeof metadata.size !== "number" || !Number.isFinite(metadata.size)) {
+    return null;
+  }
+  return metadata.size;
+}
+
+export async function getUserStorageUsed(
+  ctx: { db: any },
+  userId: string,
+  familyId: any,
+): Promise<number> {
   let total = 0;
 
   const chatMessages = await ctx.db
@@ -21,22 +36,18 @@ export async function getUserStorageUsed(ctx: { db: any }, userId: string): Prom
     if (!msg.deletedAt && msg.fileSize) total += msg.fileSize;
   }
 
-  const ownedAlbums = await ctx.db
+  // Only albums within the same family count toward this user's usage. A photo
+  // is attributed to its uploader, falling back to the album creator for legacy
+  // photos that predate per-photo uploader tracking.
+  const familyAlbums = await ctx.db
     .query("albums")
-    .withIndex("by_creatorId", (q: any) => q.eq("creatorId", userId))
+    .withIndex("by_familyId", (q: any) => q.eq("familyId", familyId))
     .collect();
-  for (const album of ownedAlbums) {
-    const photos = (album.photos ?? []) as Array<{ fileSize: number; uploadedBy?: string }>;
-    for (const photo of photos) {
-      if (!photo.uploadedBy && photo.fileSize) total += photo.fileSize;
-    }
-  }
-
-  const familyAlbums = await ctx.db.query("albums").collect();
   for (const album of familyAlbums) {
     const photos = (album.photos ?? []) as Array<{ fileSize: number; uploadedBy?: string }>;
     for (const photo of photos) {
-      if (photo.uploadedBy === userId && photo.fileSize) total += photo.fileSize;
+      const owner = photo.uploadedBy ?? album.creatorId;
+      if (owner === userId && photo.fileSize) total += photo.fileSize;
     }
   }
 
@@ -78,7 +89,7 @@ export async function assertPermanentStorageQuota(ctx: { db: any }, args: {
 
   const userLimit = args.user.storageLimit;
   if (typeof userLimit === "number" && Number.isFinite(userLimit)) {
-    const userStorageUsed = await getUserStorageUsed(ctx, args.user.clerkId);
+    const userStorageUsed = await getUserStorageUsed(ctx, args.user.clerkId, args.familyId);
     if (userStorageUsed + args.deltaBytes > userLimit) {
       throw quotaError("USER_LIMIT_EXCEEDED", "Dein persönliches Speicherlimit ist erreicht.");
     }
@@ -100,15 +111,26 @@ export async function checkPermanentStorageUpload(
   user: { clerkId: string; storageLimit?: number },
   familyId: any,
   storageId?: string,
-  fileSize?: number,
+  // The client-supplied fileSize is intentionally ignored for accounting; the
+  // server-side metadata is the source of truth. Kept for signature stability.
+  _fileSize?: number,
 ) {
   if (!storageId) return;
-  let size = fileSize ?? 0;
-  if (size <= 0) {
-    const metadata = await ctx.storage.getMetadata(storageId);
-    if (metadata) {
-      size = metadata.size;
+
+  // Already accounted for by another message/album: do not re-check or double-book.
+  if (await isStorageIdReferenced(ctx, storageId)) return;
+
+  // The stored file's real size is authoritative. A missing/invalid size means
+  // we cannot account for the upload, so reject it instead of letting it slip
+  // past the quota with a zero/forged size.
+  const size = await resolveStoredFileSize(ctx, storageId);
+  if (size === null || size <= 0) {
+    try {
+      await ctx.storage.delete(storageId);
+    } catch {
+      // Best-effort cleanup only.
     }
+    throw quotaError("INVALID_FILE_SIZE", "Die Dateigröße konnte nicht verifiziert werden.");
   }
 
   try {

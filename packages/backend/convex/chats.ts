@@ -33,7 +33,7 @@ function createDirectKey(userA: string, userB: string) {
   return [userA, userB].sort((a, b) => a.localeCompare(b)).join(":");
 }
 
-function assertThreadParticipant(thread: { type: "group" | "direct" | "event"; participantIds: string[] }, userId: string) {
+function assertThreadParticipant(thread: { type: "group" | "direct" | "event" | "conflict" | "secure_direct"; participantIds: string[] }, userId: string) {
   if (thread.type === "group" || thread.type === "event") return;
   if (!thread.participantIds.includes(userId)) {
     throw appError("THREAD_ACCESS_DENIED", "Du bist kein Teilnehmer dieses Chats.");
@@ -164,7 +164,11 @@ export const listThreads = query({
       .query("chatThreads")
       .withIndex("by_familyId_type", (q) => q.eq("familyId", familyId).eq("type", "event"))
       .collect();
-    const threads = [...groupThreads, ...directThreads, ...eventThreads];
+    const secureDirectThreads = await ctx.db
+      .query("chatThreads")
+      .withIndex("by_familyId_type", (q) => q.eq("familyId", familyId).eq("type", "secure_direct"))
+      .collect();
+    const threads = [...groupThreads, ...directThreads, ...eventThreads, ...secureDirectThreads];
 
     return threads
       .filter((thread) => thread.type === "group" || thread.participantIds.includes(userId))

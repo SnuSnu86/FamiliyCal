@@ -31,6 +31,15 @@ export default defineSchema({
     .index("by_familyId", ["familyId"])
     .index("by_email", ["email"]),
 
+  caregiverPins: defineTable({
+    familyId: v.id("families"),
+    pin: v.string(),
+    expiresAt: v.number(),
+    creatorId: v.string(),
+  })
+    .index("by_pin", ["pin"])
+    .index("by_familyId", ["familyId"]),
+
   users: defineTable({
     clerkId: v.string(),
     email: v.string(),
@@ -46,6 +55,9 @@ export default defineSchema({
       v.literal("ROLE-006")
     ),
     storageLimit: v.optional(v.number()),
+    publicKey: v.optional(v.string()),
+    encryptedPrivateKey: v.optional(v.string()),
+    keyDerivationSalt: v.optional(v.string()),
   })
     .index("by_clerkId", ["clerkId"])
     .index("by_familyId", ["familyId"]),
@@ -144,11 +156,15 @@ export default defineSchema({
 
   chatThreads: defineTable({
     familyId: v.id("families"),
-    type: v.union(v.literal("group"), v.literal("direct"), v.literal("event")),
+    type: v.union(v.literal("group"), v.literal("direct"), v.literal("event"), v.literal("conflict"), v.literal("secure_direct")),
     title: v.string(),
     participantIds: v.array(v.string()),
     directKey: v.optional(v.string()),
     calendarEventId: v.optional(v.id("calendarEvents")),
+    conflictingEventIds: v.optional(v.array(v.id("calendarEvents"))),
+    status: v.optional(v.union(v.literal("active"), v.literal("archived"))),
+    cooldownJobId: v.optional(v.string()),
+    archiveJobId: v.optional(v.string()),
     createdBy: v.string(),
     createdAt: v.number(),
     updatedAt: v.number(),
@@ -175,15 +191,30 @@ export default defineSchema({
     .index("by_threadId_createdAt", ["threadId", "createdAt"])
     .index("by_senderId", ["senderId"]),
 
+  secureChats: defineTable({
+    threadId: v.id("chatThreads"),
+    familyId: v.id("families"),
+    senderId: v.string(),
+    ciphertext: v.string(),
+    iv: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_threadId_createdAt", ["threadId", "createdAt"])
+    .index("by_senderId", ["senderId"]),
+
   activityFeedEntries: defineTable({
     familyId: v.id("families"),
     actorId: v.string(),
     type: v.union(
       v.literal("chat_message"),
       v.literal("event_comment"),
+      v.literal("calendar_event"),
       v.literal("memo_updated"),
+      v.literal("memo_deleted"),
       v.literal("list_updated"),
+      v.literal("list_deleted"),
       v.literal("album_updated"),
+      v.literal("album_deleted"),
       v.literal("quota_updated")
     ),
     entityType: v.union(
@@ -202,6 +233,16 @@ export default defineSchema({
   })
     .index("by_familyId_createdAt", ["familyId", "createdAt"])
     .index("by_familyId_type_createdAt", ["familyId", "type", "createdAt"]),
+
+  dailyDigests: defineTable({
+    familyId: v.id("families"),
+    userId: v.string(),
+    body: v.string(),
+    dateStr: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_userId_and_dateStr", ["userId", "dateStr"])
+    .index("by_familyId_and_userId", ["familyId", "userId"]),
 
   pushTokens: defineTable({
     userId: v.string(),

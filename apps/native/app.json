@@ -18,6 +18,7 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "de.familycal.app",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
@@ -36,6 +37,7 @@
       ],
       "expo-font",
       "expo-secure-store",
+      "expo-dev-client",
       "@skam22/watermelondb-expo-plugin",
       [
         "expo-build-properties",
@@ -44,7 +46,10 @@
             "useFrameworks": "static"
           },
           "android": {
-            "kotlinVersion": "2.1.20"
+            "kotlinVersion": "2.1.20",
+            "packagingOptions": {
+              "pickFirst": ["**/libc++_shared.so"]
+            }
           }
         }
       ]

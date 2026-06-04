@@ -243,7 +243,7 @@ function MappingWrapper({ clerkId }: { clerkId?: string }) {
   }
 
   const segments = useSegments();
-  const isOnboarding = segments.includes("create-family");
+  const isOnboarding = (segments as readonly string[]).includes("create-family");
 
   if (mappedUser && !mappedUser.familyId) {
     if (!isOnboarding) {
@@ -257,6 +257,7 @@ function MappingWrapper({ clerkId }: { clerkId?: string }) {
     <View style={styles.appShell}>
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="event-editor" options={{ presentation: "modal" }} />
+        <Stack.Screen name="e2e-setup" />
         <Stack.Screen name="chats" />
         <Stack.Screen name="chat/[threadId]" />
       </Stack>

@@ -124,6 +124,36 @@ export type SyncListResult = {
   mergedFields: Record<string, "local" | "server">;
 };
 
+export type UserE2EEField = "publicKey" | "encryptedPrivateKey";
+
+export type UserE2EELike = {
+  publicKey?: string | null;
+  public_key?: string | null;
+  encryptedPrivateKey?: string | null;
+  encrypted_private_key?: string | null;
+  [key: string]: unknown;
+};
+
+export type UserE2EESyncPayload = Partial<Record<UserE2EEField, string | undefined>>;
+
+export function buildUserE2EESyncPayload(user: UserE2EELike): UserE2EESyncPayload {
+  const camelUser = toCamelCase<Record<string, unknown>>(user as Record<string, unknown>);
+  const payload: UserE2EESyncPayload = {};
+  if ("publicKey" in camelUser) payload.publicKey = typeof camelUser.publicKey === "string" ? camelUser.publicKey : undefined;
+  if ("encryptedPrivateKey" in camelUser) {
+    payload.encryptedPrivateKey = typeof camelUser.encryptedPrivateKey === "string" ? camelUser.encryptedPrivateKey : undefined;
+  }
+  return payload;
+}
+
+export function mapUserE2EEFieldsToLocal(serverUser: UserE2EELike): Record<"public_key" | "encrypted_private_key", string | undefined> {
+  const camelUser = toCamelCase<Record<string, unknown>>(serverUser as Record<string, unknown>);
+  return {
+    public_key: typeof camelUser.publicKey === "string" ? camelUser.publicKey : undefined,
+    encrypted_private_key: typeof camelUser.encryptedPrivateKey === "string" ? camelUser.encryptedPrivateKey : undefined,
+  };
+}
+
 export type AlbumPhoto = { storageId: string; fileSize: number; uploadedAt: number };
 
 export type AlbumField =

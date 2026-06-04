@@ -5,7 +5,7 @@ import type { CalendarEvent } from "../database/models/CalendarEvent";
 import type { VirtualMember } from "../database/models/VirtualMember";
 
 type CalendarDatabase = {
-  collections: { get: (table: string) => { find?: (id: string) => Promise<VirtualMember>; query: (...conditions: unknown[]) => { fetch: () => Promise<CalendarEvent[]> } } };
+  collections: { get: (table: string) => { find?: (id: string) => Promise<VirtualMember>; query: (...conditions: unknown[]) => { fetch: () => Promise<CalendarEvent[]> }; deletedRecords?: Array<CalendarEvent & { destroyPermanently: () => Promise<void> }> } };
   write: (writer: () => Promise<void>) => Promise<void>;
 };
 
@@ -29,11 +29,30 @@ export async function syncPendingCalendarEvents({
   db: CalendarDatabase;
   convexClient: ConvexClientLike;
 }): Promise<CalendarSyncResult> {
-  const events = await db.collections
-    .get("calendar_events")
+  const collection = db.collections.get("calendar_events");
+  const result: CalendarSyncResult = { synced: [], errors: [] };
+
+  try {
+    const deleted = collection.deletedRecords || [];
+    for (const record of deleted) {
+      try {
+        if (record.serverId) {
+          await convexClient.mutation(api.calendarEvents.deleteEvent, { eventId: record.serverId, familyId: record.familyId });
+        }
+        await record.destroyPermanently();
+        result.synced.push({ localId: record.id, serverId: record.serverId ?? "deleted-local-only" });
+      } catch (error) {
+        console.warn("Calendar event delete sync failed", { localId: record.id, error });
+        result.errors.push({ localId: record.id, error });
+      }
+    }
+  } catch (error) {
+    console.warn("Deleted calendar events sync failed", error);
+  }
+
+  const events = await collection
     .query(Q.or(Q.where("server_id", Q.eq(null)), Q.where("_status", Q.eq("updated"))))
     .fetch();
-  const result: CalendarSyncResult = { synced: [], errors: [] };
 
   for (const event of events) {
     try {

@@ -43,5 +43,17 @@ export const migrations = schemaMigrations({
         }),
       ],
     },
+    {
+      toVersion: 3,
+      steps: [
+        addColumns({
+          table: "users",
+          columns: [
+            { name: "public_key", type: "string", isOptional: true },
+            { name: "encrypted_private_key", type: "string", isOptional: true },
+          ],
+        }),
+      ],
+    },
   ],
 });

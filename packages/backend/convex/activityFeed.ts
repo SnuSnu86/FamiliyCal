@@ -1,6 +1,6 @@
 import { ConvexError, v } from "convex/values";
 import { query } from "./_generated/server";
-import { type Auth } from "convex/server";
+import { type Auth, paginationOptsValidator } from "convex/server";
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_LIMIT = 100;
@@ -8,9 +8,13 @@ const MAX_LIMIT = 100;
 export type ActivityFeedType =
   | "chat_message"
   | "event_comment"
+  | "calendar_event"
   | "memo_updated"
+  | "memo_deleted"
   | "list_updated"
+  | "list_deleted"
   | "album_updated"
+  | "album_deleted"
   | "quota_updated";
 
 export type ActivityFeedEntityType = "chatThread" | "calendarEvent" | "memo" | "list" | "album" | "user" | "family";
@@ -61,30 +65,22 @@ export async function recordActivity(
 export const list = query({
   args: {
     familyId: v.id("families"),
-    cursor: v.optional(v.number()),
-    limit: v.optional(v.number()),
+    paginationOpts: paginationOptsValidator,
   },
   handler: async (ctx, args) => {
     await requireFamilyMember(ctx, args.familyId);
     const lowerBound = Date.now() - THIRTY_DAYS_MS;
-    const limit = Math.max(1, Math.min(MAX_LIMIT, Math.floor(args.limit ?? 25)));
-    const cursor = args.cursor ?? Number.POSITIVE_INFINITY;
+    // Convex's cursor pagination encodes the full index key (createdAt + _id),
+    // so entries that share the same createdAt are no longer dropped across page
+    // boundaries. The 30-day retention window is enforced via the index range.
+    const numItems = Math.max(1, Math.min(MAX_LIMIT, Math.floor(args.paginationOpts.numItems || 25)));
 
-    const items = await ctx.db
+    return await ctx.db
       .query("activityFeedEntries")
       .withIndex("by_familyId_createdAt", (q) =>
-        q.eq("familyId", args.familyId).gte("createdAt", lowerBound).lt("createdAt", cursor),
+        q.eq("familyId", args.familyId).gte("createdAt", lowerBound),
       )
       .order("desc")
-      .take(limit + 1);
-
-    const page = items.slice(0, limit);
-    const nextCursor = items.length > limit ? page[page.length - 1]?.createdAt : null;
-
-    return {
-      items: page,
-      nextCursor,
-      hasMore: nextCursor !== null,
-    };
+      .paginate({ ...args.paginationOpts, numItems });
   },
 });

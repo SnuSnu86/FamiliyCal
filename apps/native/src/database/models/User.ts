@@ -18,4 +18,6 @@ export class User extends Model {
   @field("family_id") familyId?: string;
   @relation("families", "family_id") family!: Relation<Family>;
   @field("role") role?: string;
+  @field("public_key") publicKey?: string;
+  @field("encrypted_private_key") encryptedPrivateKey?: string;
 }

@@ -2,12 +2,15 @@ import { Q } from "@nozbe/watermelondb";
 import withObservables from "@nozbe/with-observables";
 import { type Href, useRouter } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { FlatList, ScrollView, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from "react-native";
-import { useConvex } from "convex/react";
+import { Alert, FlatList, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, useWindowDimensions, View } from "react-native";
+import { useConvex, useMutation, useQuery } from "convex/react";
+import { api } from "@packages/backend/convex/_generated/api";
 
 import { CalendarCard } from "../components/CalendarCard";
+import { DailyDigestCard } from "../components/DailyDigestCard";
 import { EventComments } from "../components/chat/EventComments";
 import { StatusDot } from "../components/StatusDot";
+import { VetoBadge } from "../components/VetoBadge";
 import {
   formatDateLabel,
   getMonthGridDays,
@@ -31,14 +34,34 @@ const VIEW_LABELS: Record<CalendarView, string> = { month: "Monat", week: "Woche
 function CalendarDashboardScreen({ events }: Props) {
   const router = useRouter();
   const convexClient = useConvex();
+  const currentUser = useQuery(api.users.getCurrentUser);
+  const ensureEventThread = useMutation(api.chats.ensureEventThread);
+  const clearVeto = useMutation(api.calendarEvents.clearVeto);
+  const requestSchedulingSuggestions = useMutation(api.agents.requestSchedulingSuggestions);
+  const todayDateStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const dailyDigest = useQuery(api.agents.getDailyDigest, { dateStr: todayDateStr });
+  const requestDailyDigest = useMutation(api.agents.requestDailyDigest);
   const isOnline = useNetworkStatus();
   const { width } = useWindowDimensions();
   const isTablet = width >= 768;
   const [calendarView, setCalendarView] = useState<CalendarView>("week");
   const [focusedDate, setFocusedDate] = useState(() => new Date());
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
+  const [vetoDraftEvent, setVetoDraftEvent] = useState<CalendarEvent | null>(null);
+  const [vetoReason, setVetoReason] = useState("");
+  const [schedulingModalOpen, setSchedulingModalOpen] = useState(false);
+  const [schedulingTitle, setSchedulingTitle] = useState("");
+  const [schedulingDuration, setSchedulingDuration] = useState("60");
+  const [schedulingStart, setSchedulingStart] = useState(() => new Date().toISOString());
+  const [schedulingEnd, setSchedulingEnd] = useState(() => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString());
   const wasOnlineRef = useRef(isOnline);
   const isSyncingRef = useRef(false);
+
+  useEffect(() => {
+    if (dailyDigest === null) {
+      requestDailyDigest({ dateStr: todayDateStr }).catch((error) => console.warn("Daily digest request failed", error));
+    }
+  }, [dailyDigest, requestDailyDigest, todayDateStr]);
 
   useEffect(() => {
     const cameOnline = !wasOnlineRef.current && isOnline;
@@ -78,6 +101,48 @@ function CalendarDashboardScreen({ events }: Props) {
     setSelectedEvent(event);
   };
 
+  const syncCalendarChanges = () => {
+    if (isSyncingRef.current) return;
+    isSyncingRef.current = true;
+    syncPendingCalendarEvents({ db: database, convexClient })
+      .catch((error) => console.warn("Calendar sync trigger failed", error))
+      .finally(() => {
+        isSyncingRef.current = false;
+      });
+  };
+
+  const approveDraftEvent = async (event: CalendarEvent) => {
+    const originalDraftTitle = event.title;
+    await database.write(async () => {
+      await event.update((localEvent) => {
+        localEvent.status = "confirmed";
+        localEvent.title = localEvent.title.replace(/^\[Vorschlag\]\s*/, "");
+      });
+      const siblingDrafts = events.filter((candidate) => candidate.id !== event.id && candidate.status === "draft" && candidate.creatorId === "scheduling-agent" && candidate.title === originalDraftTitle);
+      for (const sibling of siblingDrafts) {
+        await sibling.markAsDeleted();
+      }
+    });
+    syncCalendarChanges();
+  };
+
+  const declineDraftEvent = (event: CalendarEvent) => {
+    Alert.alert("Vorschlag ablehnen", "Möchtest du diesen Vorschlag wirklich ablehnen?", [
+      { text: "Abbrechen", style: "cancel" },
+      {
+        text: "Ja, ablehnen",
+        style: "destructive",
+        onPress: async () => {
+          await database.write(async () => {
+            await event.markAsDeleted();
+          });
+          setSelectedEvent(null);
+          syncCalendarChanges();
+        },
+      },
+    ]);
+  };
+
   const shiftFocus = (direction: -1 | 1) => {
     setFocusedDate((current) => {
       const next = new Date(current);
@@ -89,6 +154,72 @@ function CalendarDashboardScreen({ events }: Props) {
     });
   };
   const goToday = () => setFocusedDate(new Date());
+
+  const canReviewDrafts = currentUser?.role === "ROLE-001" || currentUser?.role === "ROLE-002";
+  const isChild = currentUser?.role === "ROLE-004";
+  const submitSchedulingRequest = async () => {
+    const title = schedulingTitle.trim();
+    const durationMinutes = Number.parseInt(schedulingDuration, 10);
+    if (!currentUser?.familyId || !title || !Number.isFinite(durationMinutes) || durationMinutes <= 0) {
+      Alert.alert("Angaben prüfen", "Bitte gib Titel, Dauer und Wunschzeitraum korrekt ein.");
+      return;
+    }
+    await requestSchedulingSuggestions({
+      familyId: currentUser.familyId as any,
+      title,
+      durationMinutes,
+      preferredTimeRange: { start: schedulingStart, end: schedulingEnd },
+    });
+    setSchedulingModalOpen(false);
+    setSchedulingTitle("");
+    Alert.alert("Terminvorschläge werden generiert", "Der Scheduling Agent legt gleich drei Vorschläge als Entwürfe an.");
+  };
+
+  const raiseLocalVeto = (event: CalendarEvent) => {
+    setVetoDraftEvent(event);
+    setVetoReason(event.vetoReason ?? "");
+  };
+
+  const submitLocalVeto = async () => {
+    const reason = vetoReason.trim();
+    if (!vetoDraftEvent || !reason) {
+      Alert.alert("Grund fehlt", "Bitte gib einen kurzen Grund für deinen Einspruch an.");
+      return;
+    }
+    await database.write(async () => {
+      await vetoDraftEvent.update((localEvent) => {
+        localEvent.vetoStatus = "vetoed";
+        localEvent.vetoReason = reason;
+        localEvent.vetoChildId = currentUser?.clerkId ?? (currentUser?._id ? String(currentUser._id) : undefined);
+      });
+    });
+    setVetoDraftEvent(null);
+    setVetoReason("");
+    syncCalendarChanges();
+  };
+
+  const openClarificationChat = async (event: CalendarEvent) => {
+    if (!event.serverId) {
+      Alert.alert("Noch nicht synchronisiert", "Der Klärungs-Chat ist verfügbar, sobald der Termin synchronisiert ist.");
+      return;
+    }
+    await ensureEventThread({ calendarEventId: event.serverId as any });
+    router.push("/chats" as Href);
+  };
+
+  const clearEventVeto = async (event: CalendarEvent) => {
+    if (event.serverId) {
+      await clearVeto({ eventId: event.serverId as any });
+    }
+    await database.write(async () => {
+      await event.update((localEvent) => {
+        localEvent.vetoStatus = undefined;
+        localEvent.vetoReason = undefined;
+        localEvent.vetoChildId = undefined;
+      });
+    });
+    syncCalendarChanges();
+  };
 
   const calendarContent = renderCalendarContent({
     calendarView,
@@ -115,9 +246,20 @@ function CalendarDashboardScreen({ events }: Props) {
           <TouchableOpacity accessibilityRole="button" accessibilityLabel="Chats öffnen" style={styles.chatButton} onPress={() => router.push("/chats" as Href)}>
             <Text style={styles.chatButtonText}>Chats</Text>
           </TouchableOpacity>
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel="Spracheingabe öffnen" style={styles.chatButton} onPress={() => router.push("/voice-input" as Href)}>
+            <Text style={styles.chatButtonText}>🎙</Text>
+          </TouchableOpacity>
           <StatusDot />
         </View>
       </View>
+
+      <DailyDigestCard digest={dailyDigest} loading={dailyDigest === undefined || dailyDigest === null} dateStr={todayDateStr} />
+
+      {canReviewDrafts ? (
+        <TouchableOpacity accessibilityRole="button" accessibilityLabel="Terminvorschläge generieren" style={styles.schedulingButton} onPress={() => setSchedulingModalOpen(true)}>
+          <Text style={styles.schedulingButtonText}>Terminvorschläge generieren</Text>
+        </TouchableOpacity>
+      ) : null}
 
       <View style={styles.segmented} accessibilityLabel="Kalenderansicht umschalten">
         {VIEWS.map((view) => (
@@ -150,14 +292,60 @@ function CalendarDashboardScreen({ events }: Props) {
         <View style={styles.tabletLayout}>
           <View style={styles.sideColumn}>{renderQuickNav(calendarView, setCalendarView, () => router.push("/event-editor" as Href))}</View>
           <View style={styles.centerColumn}>{calendarContent}</View>
-          <View style={styles.sideColumn}>{renderContextPanel(selectedEvent)}</View>
+          <View style={styles.sideColumn}>{renderContextPanel(selectedEvent, { canReviewDrafts, isChild, onApprove: approveDraftEvent, onDecline: declineDraftEvent, onRaiseVeto: raiseLocalVeto, onOpenClarificationChat: openClarificationChat, onClearVeto: clearEventVeto })}</View>
         </View>
       ) : (
         <View style={styles.phoneContent}>
           <View style={styles.phoneCalendar}>{calendarContent}</View>
-          {selectedEvent ? <View style={styles.phoneContext}>{renderContextPanel(selectedEvent)}</View> : null}
+          {selectedEvent ? <View style={styles.phoneContext}>{renderContextPanel(selectedEvent, { canReviewDrafts, isChild, onApprove: approveDraftEvent, onDecline: declineDraftEvent, onRaiseVeto: raiseLocalVeto, onOpenClarificationChat: openClarificationChat, onClearVeto: clearEventVeto })}</View> : null}
         </View>
       )}
+
+      <Modal transparent visible={schedulingModalOpen} animationType="fade" onRequestClose={() => setSchedulingModalOpen(false)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.vetoModal}>
+            <Text style={styles.panelTitle}>Terminvorschläge generieren</Text>
+            <TextInput accessibilityLabel="Titel für Terminvorschläge" style={styles.vetoInput} value={schedulingTitle} onChangeText={setSchedulingTitle} placeholder="Titel" placeholderTextColor="#8A8176" />
+            <TextInput accessibilityLabel="Dauer in Minuten" style={styles.vetoInput} value={schedulingDuration} onChangeText={setSchedulingDuration} keyboardType="number-pad" placeholder="Dauer in Minuten" placeholderTextColor="#8A8176" />
+            <TextInput accessibilityLabel="Start des Wunschzeitraums" style={styles.vetoInput} value={schedulingStart} onChangeText={setSchedulingStart} placeholder="Start ISO" placeholderTextColor="#8A8176" />
+            <TextInput accessibilityLabel="Ende des Wunschzeitraums" style={styles.vetoInput} value={schedulingEnd} onChangeText={setSchedulingEnd} placeholder="Ende ISO" placeholderTextColor="#8A8176" />
+            <View style={styles.draftActions}>
+              <TouchableOpacity accessibilityRole="button" style={[styles.draftActionButton, styles.declineButton]} onPress={() => setSchedulingModalOpen(false)}>
+                <Text style={styles.draftActionText}>Abbrechen</Text>
+              </TouchableOpacity>
+              <TouchableOpacity accessibilityRole="button" style={[styles.draftActionButton, styles.approveButton]} onPress={submitSchedulingRequest}>
+                <Text style={styles.draftActionText}>Generieren</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal transparent visible={!!vetoDraftEvent} animationType="fade" onRequestClose={() => setVetoDraftEvent(null)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.vetoModal}>
+            <Text style={styles.panelTitle}>Einspruch erheben</Text>
+            <Text style={styles.contextText}>Warum passt dieser Termin für dich nicht?</Text>
+            <TextInput
+              accessibilityLabel="Grund für Einspruch eingeben"
+              style={styles.vetoInput}
+              value={vetoReason}
+              onChangeText={setVetoReason}
+              placeholder="Kurzer Grund …"
+              placeholderTextColor="#8A8176"
+              multiline
+            />
+            <View style={styles.draftActions}>
+              <TouchableOpacity accessibilityRole="button" style={[styles.draftActionButton, styles.declineButton]} onPress={() => setVetoDraftEvent(null)}>
+                <Text style={styles.draftActionText}>Abbrechen</Text>
+              </TouchableOpacity>
+              <TouchableOpacity accessibilityRole="button" style={[styles.draftActionButton, styles.vetoButton]} onPress={submitLocalVeto}>
+                <Text style={styles.draftActionText}>Absenden</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       <TouchableOpacity
         accessibilityRole="button"
@@ -249,7 +437,21 @@ function renderQuickNav(currentView: CalendarView, setView: (view: CalendarView)
   );
 }
 
-function renderContextPanel(event: CalendarEvent | null) {
+function renderContextPanel(
+  event: CalendarEvent | null,
+  actions: {
+    canReviewDrafts: boolean;
+    isChild: boolean;
+    onApprove: (event: CalendarEvent) => void;
+    onDecline: (event: CalendarEvent) => void;
+    onRaiseVeto: (event: CalendarEvent) => void;
+    onOpenClarificationChat: (event: CalendarEvent) => void;
+    onClearVeto: (event: CalendarEvent) => void;
+  },
+) {
+  const showDraftReviewActions = event?.status === "draft" && actions.canReviewDrafts;
+  const showParentVetoActions = event?.vetoStatus === "vetoed" && actions.canReviewDrafts;
+
   return (
     <View accessibilityLabel="Kontextpanel Kalendertermin" style={styles.panel}>
       <Text style={styles.panelTitle}>Details</Text>
@@ -258,6 +460,37 @@ function renderContextPanel(event: CalendarEvent | null) {
           <Text style={styles.contextTitle}>{event.title}</Text>
           <Text style={styles.contextText}>{new Date(event.startDate).toLocaleString()} – {new Date(event.endDate).toLocaleString()}</Text>
           {event.description ? <Text style={styles.contextText}>{event.description}</Text> : null}
+          {event.vetoStatus === "vetoed" ? (
+            <View style={styles.vetoPanel}>
+              <VetoBadge />
+              {event.vetoReason ? <Text style={styles.contextText}>Grund: {event.vetoReason}</Text> : null}
+            </View>
+          ) : null}
+          {actions.isChild ? (
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel="Einspruch gegen Termin erheben" style={[styles.draftActionButton, styles.vetoButton]} onPress={() => actions.onRaiseVeto(event)}>
+              <Text style={styles.draftActionText}>Einspruch erheben</Text>
+            </TouchableOpacity>
+          ) : null}
+          {showParentVetoActions ? (
+            <View style={styles.draftActions} accessibilityLabel="Einspruch klären">
+              <TouchableOpacity accessibilityRole="button" accessibilityLabel="Klärungs-Chat öffnen" style={[styles.draftActionButton, styles.approveButton]} onPress={() => actions.onOpenClarificationChat(event)}>
+                <Text style={styles.draftActionText}>Klärungs-Chat öffnen</Text>
+              </TouchableOpacity>
+              <TouchableOpacity accessibilityRole="button" accessibilityLabel="Einspruch aufheben" style={[styles.draftActionButton, styles.declineButton]} onPress={() => actions.onClearVeto(event)}>
+                <Text style={styles.draftActionText}>Einspruch aufheben</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+          {showDraftReviewActions ? (
+            <View style={styles.draftActions} accessibilityLabel="Terminvorschlag prüfen">
+              <TouchableOpacity accessibilityRole="button" accessibilityLabel="Terminvorschlag bestätigen" style={[styles.draftActionButton, styles.approveButton]} onPress={() => actions.onApprove(event)}>
+                <Text style={styles.draftActionText}>Bestätigen</Text>
+              </TouchableOpacity>
+              <TouchableOpacity accessibilityRole="button" accessibilityLabel="Terminvorschlag ablehnen" style={[styles.draftActionButton, styles.declineButton]} onPress={() => actions.onDecline(event)}>
+                <Text style={styles.draftActionText}>Ablehnen</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
           <EventComments calendarEventId={event.serverId} />
         </>
       ) : (
@@ -308,6 +541,8 @@ const styles = StyleSheet.create({
   headerActions: { flexDirection: "row", alignItems: "center", gap: 8 },
   chatButton: { minHeight: 44, justifyContent: "center", borderRadius: 12, paddingHorizontal: 14, backgroundColor: "#7D9B84" },
   chatButtonText: { color: "#FFFFFF", fontWeight: "700" },
+  schedulingButton: { marginHorizontal: 16, marginBottom: 12, borderRadius: 12, minHeight: 48, alignItems: "center", justifyContent: "center", backgroundColor: "#5C7C8A" },
+  schedulingButtonText: { color: "#FFFFFF", fontWeight: "700" },
   rangeLabel: { color: "#5C7C8A", marginTop: 4 },
   segmented: { flexDirection: "row", marginHorizontal: 16, marginBottom: 12, borderRadius: 14, backgroundColor: "#E2DDD5", padding: 4 },
   segment: { flex: 1, minHeight: 48, alignItems: "center", justifyContent: "center", borderRadius: 10 },
@@ -330,6 +565,16 @@ const styles = StyleSheet.create({
   navActionText: { color: "#2A2720", fontWeight: "600" },
   contextTitle: { color: "#2A2720", fontSize: 16, fontWeight: "700" },
   contextText: { color: "#2A2720", marginTop: 8 },
+  modalBackdrop: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24, backgroundColor: "rgba(42,39,32,0.35)" },
+  vetoModal: { width: "100%", maxWidth: 420, borderRadius: 16, borderWidth: 1, borderColor: "#E2DDD5", backgroundColor: "#FBF9F5", padding: 16 },
+  vetoInput: { minHeight: 96, marginTop: 12, borderRadius: 12, borderWidth: 1, borderColor: "#E2DDD5", padding: 12, color: "#2A2720", backgroundColor: "#FFFFFF", textAlignVertical: "top" },
+  vetoPanel: { marginTop: 12, gap: 6 },
+  draftActions: { flexDirection: "row", gap: 8, marginTop: 12, marginBottom: 4 },
+  draftActionButton: { flex: 1, minHeight: 44, minWidth: 44, alignItems: "center", justifyContent: "center", borderRadius: 12, paddingHorizontal: 12 },
+  approveButton: { backgroundColor: "#7D9B84" },
+  declineButton: { backgroundColor: "#C06C5C" },
+  vetoButton: { marginTop: 12, backgroundColor: "#C06C5C" },
+  draftActionText: { color: "#FFFFFF", fontWeight: "700" },
   monthGrid: { flexDirection: "row", flexWrap: "wrap", paddingHorizontal: 12, paddingBottom: 16 },
   weekGrid: { paddingHorizontal: 12, paddingBottom: 16 },
   dayList: { paddingBottom: 16 },

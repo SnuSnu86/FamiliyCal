@@ -109,6 +109,50 @@ export const getUserByClerkId = query({
   },
 });
 
+export const getCurrentUser = query({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) throw new ConvexError("Authentication required");
+
+    return await ctx.db
+      .query("users")
+      .withIndex("by_clerkId", (q) => q.eq("clerkId", identity.subject))
+      .unique();
+  },
+});
+
+export const saveE2EEKeys = mutation({
+  args: {
+    publicKey: v.string(),
+    encryptedPrivateKey: v.string(),
+    keyDerivationSalt: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) throw new ConvexError("Authentication required");
+
+    if (!args.publicKey.trim() || !args.encryptedPrivateKey.trim() || !args.keyDerivationSalt.trim()) {
+      throw new ConvexError("E2EE key payload is incomplete");
+    }
+
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_clerkId", (q) => q.eq("clerkId", identity.subject))
+      .unique();
+
+    if (!user) throw new ConvexError("Current user not found");
+
+    await ctx.db.patch(user._id, {
+      publicKey: args.publicKey,
+      encryptedPrivateKey: args.encryptedPrivateKey,
+      keyDerivationSalt: args.keyDerivationSalt,
+    });
+
+    return user._id;
+  },
+});
+
 export const listFamilyMembers = query({
   args: {},
   handler: async (ctx) => {

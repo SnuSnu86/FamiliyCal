@@ -6,16 +6,19 @@
     "dev": "convex dev",
     "setup": "convex dev --until-success",
     "typecheck": "node ../../node_modules/typescript/bin/tsc --noEmit -p convex",
-    "test": "pnpm run typecheck"
+    "test": "pnpm run typecheck && jest"
   },
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@packages/shared": "workspace:*",
     "convex": "1.39.1",
-    "openai": "^6.34.0",
-    "@packages/shared": "workspace:*"
+    "openai": "^6.34.0"
   },
   "devDependencies": {
+    "@types/jest": "29.5.14",
+    "jest": "29.7.0",
+    "ts-jest": "29.2.5",
     "typescript": "5.5.3"
   }
 }

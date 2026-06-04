@@ -106,6 +106,22 @@ export const sendCalendarEventCreatedPush = internalAction({
   },
 });
 
+export const listSelectedFamilyTokens = internalQuery({
+  args: {
+    familyId: v.id("families"),
+    userIds: v.array(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const tokens = await ctx.db
+      .query("pushTokens")
+      .withIndex("by_familyId", (q) => q.eq("familyId", args.familyId))
+      .collect();
+
+    const recipients = new Set(args.userIds);
+    return tokens.filter((token) => recipients.has(token.userId));
+  },
+});
+
 export const sendChatMessagePush = internalAction({
   args: {
     familyId: v.id("families"),
@@ -219,6 +235,32 @@ async function dispatchPushNotifications(
 
   return { sent };
 }
+
+export const sendConflictPush = internalAction({
+  args: {
+    familyId: v.id("families"),
+    parentIds: v.array(v.string()),
+    threadId: v.id("chatThreads"),
+    eventAId: v.id("calendarEvents"),
+    eventBId: v.id("calendarEvents"),
+    title: v.string(),
+    conflictingTitle: v.string(),
+    resourceName: v.optional(v.string()),
+  },
+  handler: async (ctx, args): Promise<{ sent: number }> => {
+    const tokens = await ctx.runQuery(internal.push.listSelectedFamilyTokens, {
+      familyId: args.familyId,
+      userIds: args.parentIds,
+    });
+    const resource = args.resourceName ? ` Ressource: ${args.resourceName}.` : "";
+    return await dispatchPushNotifications(
+      tokens,
+      "Kalenderkonflikt erkannt",
+      `${args.title} überschneidet sich mit ${args.conflictingTitle}.${resource}`,
+      { chatThreadId: args.threadId, eventAId: args.eventAId, eventBId: args.eventBId }
+    );
+  },
+});
 
 export const sendMemoUpdatedPush = internalAction({
   args: {

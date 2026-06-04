@@ -30,7 +30,7 @@ function createEvent(overrides: Record<string, unknown> = {}) {
   return event;
 }
 
-function createDb(events: any[], virtualMembers: Record<string, any> = {}) {
+function createDb(events: any[], virtualMembers: Record<string, any> = {}, deletedRecords: any[] = []) {
   return {
     collections: {
       get: (table: string) =>
@@ -43,6 +43,7 @@ function createDb(events: any[], virtualMembers: Record<string, any> = {}) {
               query: () => ({ fetch: async () => [] }),
             }
           : {
+              deletedRecords,
               query: () => ({
                 fetch: async () =>
                   events.filter((event) => !event.serverId || event._raw?._status === "updated"),
@@ -90,6 +91,18 @@ test("sync errors leave event pending", async () => {
   assert(failure.errors.length === 1, "sync errors should be returned");
   assert(!failingEvent.serverId, "failed event should remain pending");
   assert(failingEvent.resourceId === "local_resource_1", "failed sync should not clear local resource id");
+});
+
+test("deleted synced events are deleted on the server and destroyed locally", async () => {
+  const deleted = createEvent({ id: "local_evt_deleted", serverId: "server_evt_deleted", familyId: "fam_1" });
+  deleted.destroyPermanently = jest.fn().mockResolvedValue(undefined);
+  const convexClient = { mutation: jest.fn().mockResolvedValue({ deleted: true }) };
+
+  const result = await syncPendingCalendarEvents({ db: createDb([], {}, [deleted]), convexClient: convexClient as any });
+
+  assert(result.synced.length === 1, "deleted event should sync");
+  expect(convexClient.mutation).toHaveBeenCalledWith(expect.anything(), { eventId: "server_evt_deleted", familyId: "fam_1" });
+  expect(deleted.destroyPermanently).toHaveBeenCalled();
 });
 
 test("updated synced events are uploaded with resource server ids", async () => {

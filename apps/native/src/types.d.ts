@@ -9,6 +9,10 @@ declare module '@nozbe/watermelondb/adapters/sqlite' {
   const SQLiteAdapter: any;
   export default SQLiteAdapter;
 }
+declare module '@nozbe/watermelondb/adapters/lokijs' {
+  const LokiJSAdapter: any;
+  export default LokiJSAdapter;
+}
 declare module '@nozbe/watermelondb/decorators' {
   export const field: any;
   export const relation: any;

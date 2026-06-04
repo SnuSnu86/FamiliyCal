@@ -4,7 +4,7 @@ import { mutation, query } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { type Auth } from "convex/server";
 import { recordActivity } from "./activityFeed";
-import { applyFamilyStorageDelta, assertPermanentStorageQuota } from "./storageQuotas";
+import { applyFamilyStorageDelta, assertPermanentStorageQuota, getUserStorageUsed, isStorageIdReferenced } from "./storageQuotas";
 
 async function requireUserId({ auth }: { auth: Auth }) {
   const userId = (await auth.getUserIdentity())?.subject ?? null;
@@ -286,9 +286,17 @@ export const syncAlbum = mutation({
       throw new ConvexError({ code: "ALBUM_ACCESS_DENIED", message: "Dieses Album gehört nicht zu deiner Familie." });
     }
 
+    const previousPhotos = (existing?.photos ?? []) as Array<{
+      storageId: string;
+      fileSize: number;
+      uploadedBy?: string;
+    }>;
+    // Preserve the original uploader for photos that already exist in the album
+    // (matched by storageId); only attribute genuinely new photos to the editor.
+    const previousUploaderById = new Map(previousPhotos.map((p) => [p.storageId, p.uploadedBy]));
     const normalizedPhotos = args.photos.map((photo) => ({
       ...photo,
-      uploadedBy: photo.uploadedBy ?? userId,
+      uploadedBy: photo.uploadedBy ?? previousUploaderById.get(photo.storageId) ?? userId,
     }));
 
     const localRecord = {
@@ -300,18 +308,25 @@ export const syncAlbum = mutation({
       updatedAt: now,
     };
 
-    const previousPhotos = (existing?.photos ?? []) as Array<{ storageId: string; fileSize: number }>;
-    const delta = existing ? computePhotoSizeDelta({ previousPhotos, nextPhotos: normalizedPhotos }) : sumPhotoSizes(normalizedPhotos);
-    await assertPermanentStorageQuota(ctx, { familyId: args.familyId, user, deltaBytes: delta });
-
     if (existing) {
       const { record, mergedFields } = mergeAlbumFields(localRecord, existing, args.locallyChangedFields ?? []);
+      // Derive the quota delta from the photos that are actually persisted after
+      // the merge — not from the incoming photos, which the merge may discard
+      // (e.g. when `photos` is not among the locally changed fields).
+      const persistedPhotos = (record.photos ?? []) as Array<{
+        storageId: string;
+        fileSize: number;
+        uploadedAt: number;
+        uploadedBy?: string;
+      }>;
+      const delta = computePhotoSizeDelta({ previousPhotos, nextPhotos: persistedPhotos });
+      await assertPermanentStorageQuota(ctx, { familyId: args.familyId, user, deltaBytes: delta });
       const patch = {
         familyId: args.familyId,
         creatorId: existing.creatorId,
         clientId: String(record.clientId),
         name: String(record.name),
-        photos: (record.photos ?? []) as Array<{ storageId: string; fileSize: number; uploadedAt: number }>,
+        photos: persistedPhotos,
         updatedAt: now,
       };
 
@@ -340,6 +355,8 @@ export const syncAlbum = mutation({
       return { serverId: existing._id, serverRecord, mergedFields };
     }
 
+    const delta = sumPhotoSizes(normalizedPhotos);
+    await assertPermanentStorageQuota(ctx, { familyId: args.familyId, user, deltaBytes: delta });
     const albumId = await ctx.db.insert("albums", { ...localRecord, createdAt: now });
     await applyFamilyStorageDelta(ctx, args.familyId, delta);
     const serverRecord = await ctx.db.get(albumId);
@@ -408,8 +425,8 @@ export const getStorageStatus = query({
       .first();
 
     return {
-      storageUsed: family.storageUsed,
-      storageQuota: family.storageQuota,
+      storageUsed: family.storageUsed ?? 0,
+      storageQuota: family.storageQuota ?? 0,
       userStorageLimit: user?.storageLimit ?? null,
     };
   },
@@ -418,12 +435,21 @@ export const getStorageStatus = query({
 export const deleteMemo = mutation({
   args: { id: v.id("memos"), familyId: v.id("families") },
   handler: async (ctx, args) => {
-    await requireFamilyMember(ctx, args.familyId);
+    const { userId } = await requireFamilyMember(ctx, args.familyId);
     const memo = await ctx.db.get(args.id);
     if (!memo || memo.familyId !== args.familyId) {
       throw new ConvexError({ code: "MEMO_NOT_FOUND", message: "Memo nicht gefunden." });
     }
     await ctx.db.delete(args.id);
+    await recordActivity(ctx, {
+      familyId: args.familyId,
+      actorId: userId,
+      type: "memo_deleted",
+      entityType: "memo",
+      entityId: String(args.id),
+      summary: "Memo gelöscht",
+      createdAt: Date.now(),
+    });
     return args.id;
   },
 });
@@ -431,12 +457,21 @@ export const deleteMemo = mutation({
 export const deleteList = mutation({
   args: { id: v.id("lists"), familyId: v.id("families") },
   handler: async (ctx, args) => {
-    await requireFamilyMember(ctx, args.familyId);
+    const { userId } = await requireFamilyMember(ctx, args.familyId);
     const list = await ctx.db.get(args.id);
     if (!list || list.familyId !== args.familyId) {
       throw new ConvexError({ code: "LIST_NOT_FOUND", message: "Liste nicht gefunden." });
     }
     await ctx.db.delete(args.id);
+    await recordActivity(ctx, {
+      familyId: args.familyId,
+      actorId: userId,
+      type: "list_deleted",
+      entityType: "list",
+      entityId: String(args.id),
+      summary: "Liste gelöscht",
+      createdAt: Date.now(),
+    });
     return args.id;
   },
 });
@@ -450,17 +485,29 @@ export const deleteAlbum = mutation({
       throw new ConvexError({ code: "ALBUM_NOT_FOUND", message: "Album nicht gefunden." });
     }
 
+    const photos = (album.photos ?? []) as Array<{ fileSize: number; storageId?: string }>;
     const family = await ctx.db.get(args.familyId);
     if (family) {
-      const photos = (album.photos ?? []) as Array<{ fileSize: number }>;
       await applyFamilyStorageDelta(ctx, args.familyId, -sumPhotoSizes(photos));
     }
 
     await ctx.db.delete(args.id);
+    // Free the underlying storage blobs, but only if no other message/album
+    // still references them — otherwise we would orphan a live attachment.
+    for (const photo of photos) {
+      if (photo.storageId && !(await isStorageIdReferenced(ctx, photo.storageId))) {
+        try {
+          await ctx.storage.delete(photo.storageId);
+        } catch {
+          // Best-effort cleanup only.
+        }
+      }
+    }
+
     await recordActivity(ctx, {
       familyId: args.familyId,
       actorId: userId,
-      type: "album_updated",
+      type: "album_deleted",
       entityType: "album",
       entityId: String(args.id),
       summary: "Album gelöscht",
@@ -483,6 +530,10 @@ export const updateUserStorageLimit = mutation({
       throw new ConvexError({ code: "FORBIDDEN", message: "Nur Eltern/Owner dürfen Unter-Quotas verwalten." });
     }
 
+    if (args.storageLimit !== undefined && (!Number.isFinite(args.storageLimit) || args.storageLimit < 0)) {
+      throw new ConvexError({ code: "INVALID_STORAGE_LIMIT", message: "Das Speicherlimit muss eine positive Zahl sein." });
+    }
+
     const target = await ctx.db.get(args.userId);
     if (!target || target.familyId !== args.familyId) {
       throw new ConvexError({ code: "USER_NOT_FOUND", message: "Benutzer nicht gefunden." });
@@ -499,6 +550,11 @@ export const updateUserStorageLimit = mutation({
       metadata: { storageLimit: args.storageLimit ?? null },
       createdAt: Date.now(),
     });
-    return await ctx.db.get(args.userId);
+
+    // Report the child's current usage so the client can warn when the new limit
+    // is below what the child already uses (the limit is still applied).
+    const storageUsed = await getUserStorageUsed(ctx, target.clerkId, args.familyId);
+    const user = await ctx.db.get(args.userId);
+    return { user, storageUsed };
   },
 });

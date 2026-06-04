@@ -9,18 +9,19 @@ type Props = {
   fileType?: string;
   fileSize?: number;
   fileUrl?: string;
+  isSecure?: boolean;
 };
 
 function formatBytes(bytes?: number): string {
-  if (bytes === undefined || bytes === 0) return "0 Bytes";
+  if (bytes === undefined || bytes <= 0 || !Number.isFinite(bytes)) return "0 Bytes";
   const k = 1024;
   const dm = 1;
   const sizes = ["Bytes", "KB", "MB", "GB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  const i = Math.max(0, Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + " " + sizes[i];
 }
 
-export function ChatBubble({ body, createdAt, outgoing, fileName, fileType, fileSize, fileUrl }: Props) {
+export function ChatBubble({ body, createdAt, outgoing, fileName, fileType, fileSize, fileUrl, isSecure }: Props) {
   const [modalVisible, setModalVisible] = React.useState(false);
 
   const isImage = fileUrl && fileType?.startsWith("image/");
@@ -38,7 +39,7 @@ export function ChatBubble({ body, createdAt, outgoing, fileName, fileType, file
 
   return (
     <View style={[styles.row, outgoing ? styles.rowOutgoing : styles.rowIncoming]}>
-      <View style={[styles.bubble, outgoing ? styles.outgoing : styles.incoming]}>
+      <View style={[styles.bubble, outgoing ? styles.outgoing : styles.incoming, isSecure && styles.secureBubble]}>
         {/* Render attachment if exists */}
         {hasAttachment && (
           <View style={styles.attachmentContainer}>
@@ -55,7 +56,7 @@ export function ChatBubble({ body, createdAt, outgoing, fileName, fileType, file
                   animationType="fade"
                 >
                   <Pressable style={styles.modalOverlay} onPress={() => setModalVisible(false)}>
-                    <View style={styles.modalContent}>
+                    <Pressable style={styles.modalContent} onPress={() => {}}>
                       <Image source={{ uri: fileUrl }} style={styles.fullImage} resizeMode="contain" />
                       <TouchableOpacity
                         accessibilityRole="button"
@@ -64,7 +65,7 @@ export function ChatBubble({ body, createdAt, outgoing, fileName, fileType, file
                       >
                         <Text style={styles.closeButtonText}>✕ Schließen</Text>
                       </TouchableOpacity>
-                    </View>
+                    </Pressable>
                   </Pressable>
                 </Modal>
               </>
@@ -96,7 +97,13 @@ export function ChatBubble({ body, createdAt, outgoing, fileName, fileType, file
         )}
 
         <Text style={[styles.time, outgoing ? styles.outgoingMeta : styles.incomingMeta]}>
-          {new Date(createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          {isSecure ? "🔒 " : ""}
+          {(() => {
+            const date = new Date(createdAt);
+            const hours = String(date.getHours()).padStart(2, "0");
+            const minutes = String(date.getMinutes()).padStart(2, "0");
+            return `${hours}:${minutes}`;
+          })()}
         </Text>
       </View>
     </View>
@@ -104,16 +111,17 @@ export function ChatBubble({ body, createdAt, outgoing, fileName, fileType, file
 }
 
 const styles = StyleSheet.create({
-  row: { flexDirection: "row", marginBottom: 8, paddingHorizontal: 12 },
+  row: { flexDirection: "row", marginVertical: 4, paddingHorizontal: 12 },
   rowIncoming: { justifyContent: "flex-start" },
   rowOutgoing: { justifyContent: "flex-end" },
-  bubble: { maxWidth: "78%", borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8 },
-  incoming: { backgroundColor: "#FBF9F5", borderColor: "#E2DDD5", borderWidth: StyleSheet.hairlineWidth },
-  outgoing: { backgroundColor: "#7D9B84" },
-  body: { fontSize: 15, lineHeight: 20 },
+  bubble: { padding: 12, borderRadius: 12, maxWidth: "75%" },
+  secureBubble: { borderWidth: 1, borderColor: "#E2DDD5" },
+  incoming: { backgroundColor: "#FBF9F5", borderBottomLeftRadius: 0, borderWidth: 1, borderColor: "#E2DDD5" },
+  outgoing: { backgroundColor: "#DDE8D8", borderBottomRightRadius: 0 },
+  body: { fontSize: 16, color: "#2A2720", lineHeight: 22, fontFamily: "Atyp BL Variable" },
   incomingText: { color: "#2A2720" },
-  outgoingText: { color: "#FFFFFF" },
-  time: { fontSize: 11, marginTop: 4, alignSelf: "flex-end" },
+  outgoingText: { color: "#2A2720" },
+  time: { fontSize: 11, marginTop: 4, alignSelf: "flex-end", fontFamily: "Atyp BL Variable" },
   incomingMeta: { color: "#8A8176" },
   outgoingMeta: { color: "#F5F2EB" },
 
@@ -138,8 +146,8 @@ const styles = StyleSheet.create({
   },
   fileIcon: { fontSize: 24, marginRight: 8 },
   fileMeta: { flex: 1 },
-  fileName: { fontSize: 14, fontWeight: "600" },
-  fileSize: { fontSize: 11, marginTop: 2 },
+  fileName: { fontSize: 14, fontWeight: "600", fontFamily: "Atyp BL Variable" },
+  fileSize: { fontSize: 11, marginTop: 2, fontFamily: "Atyp BL Variable" },
   fileTextIncoming: { color: "#2A2720" },
   fileTextOutgoing: { color: "#FFFFFF" },
   fileSubtextIncoming: { color: "#8A8176" },
@@ -176,5 +184,6 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontSize: 16,
     fontWeight: "bold",
+    fontFamily: "Atyp BL Variable",
   },
 });
