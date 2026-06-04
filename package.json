@@ -8,6 +8,7 @@
     "clean": "turbo run clean && node -e \"require('fs').rmSync('node_modules', {recursive:true,force:true})\"",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\" --ignore-path .gitignore",
     "test": "turbo run test",
+    "android": "pnpm --filter @apps/native android",
     "verify-story-1-1": "node scripts/verify-story-1-1.mjs",
     "verify-story-1-2": "node scripts/verify-story-1-2.mjs",
     "verify-story-1-4": "node scripts/verify-story-1-4.mjs",
@@ -24,5 +25,10 @@
     "apps/*",
     "packages/*"
   ],
-  "packageManager": "pnpm@10.33.0"
+  "packageManager": "pnpm@10.33.0",
+  "pnpm": {
+    "patchedDependencies": {
+      "react-native@0.83.6": "patches/react-native@0.83.6.patch"
+    }
+  }
 }

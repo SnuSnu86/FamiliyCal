@@ -1,6 +1,6 @@
 import { describe, expect, test } from "@jest/globals";
 import { ConvexError } from "convex/values";
-import { conflictCooldownMs, eventsStillConflict } from "./agents";
+import { conflictCooldownMs, eventsStillConflict, sanitizePrivateEventForAgent } from "./agents";
 import { assertRoleCanBypassResourceConflict } from "./calendarEvents";
 
 describe("conflict agent role handling", () => {
@@ -37,6 +37,53 @@ describe("conflict agent cooldown", () => {
         { startDate: "2026-06-06T12:30:00.000Z" },
       ),
     ).toBe(15 * 60 * 1000);
+  });
+});
+
+describe("private event masking", () => {
+  test("keeps only safe metadata and labels private events for agents", () => {
+    const sanitized = sanitizePrivateEventForAgent({
+      _id: "event-private",
+      familyId: "fam_1",
+      creatorId: "user_1",
+      clientId: "local_1",
+      title: "Therapie",
+      description: "Vertrauliche Details",
+      startDate: "2026-06-04T10:00:00.000Z",
+      endDate: "2026-06-04T11:00:00.000Z",
+      allDay: false,
+      rrule: "FREQ=WEEKLY",
+      timezoneId: "Europe/Berlin",
+      floatingTime: false,
+      resourceId: "room_1",
+      status: "confirmed",
+      vetoReason: "privat",
+      checklist: [{ text: "nicht senden" }],
+      isPrivate: true,
+      updatedAt: 1,
+      createdAt: 0,
+    });
+
+    expect(sanitized).toEqual({
+      _id: "event-private",
+      familyId: "fam_1",
+      creatorId: "user_1",
+      clientId: "local_1",
+      startDate: "2026-06-04T10:00:00.000Z",
+      endDate: "2026-06-04T11:00:00.000Z",
+      allDay: false,
+      rrule: "FREQ=WEEKLY",
+      timezoneId: "Europe/Berlin",
+      floatingTime: false,
+      resourceId: "room_1",
+      status: "confirmed",
+      updatedAt: 1,
+      createdAt: 0,
+      title: "Privat",
+    });
+    expect("description" in sanitized).toBe(false);
+    expect("vetoReason" in sanitized).toBe(false);
+    expect("checklist" in sanitized).toBe(false);
   });
 });
 

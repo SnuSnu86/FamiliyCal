@@ -1,3 +1,4 @@
+import { computeKeyFingerprint, publicKeysMatch } from "@packages/shared";
 import { internal } from "./_generated/api";
 import { mutation, query } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
@@ -118,7 +119,7 @@ export const sendSecureMessage = mutation({
       lastMessagePreview: SECURE_PREVIEW,
     });
 
-    await ctx.scheduler.runAfter(0, internal.push.sendChatMessagePush, {
+    await ctx.scheduler.runAfter(0, internal.push.sendSecureChatMessagePush, {
       familyId,
       senderId: userId,
       threadId: args.threadId,
@@ -142,4 +143,140 @@ export const listSecureMessages = query({
       .take(MESSAGE_LIMIT);
     return messages.reverse();
   },
+});
+
+export async function verifyParticipantKeyHandler(
+  ctx: { auth: Auth; db: any },
+  args: { verifiedUserId: string; publicKey: string; fingerprint: string },
+) {
+    const { userId, user, familyId } = await requireUser(ctx);
+    if (args.verifiedUserId === userId) {
+      throw appError("SELF_VERIFICATION_DENIED", "Du kannst deinen eigenen Schlüssel nicht als Gegenüber verifizieren.");
+    }
+    if (!args.publicKey.trim() || !args.fingerprint.trim()) {
+      throw appError("KEY_VERIFICATION_INVALID", "Öffentlicher Schlüssel und Fingerprint sind erforderlich.");
+    }
+
+    const verifiedUser = await ctx.db
+      .query("users")
+      .withIndex("by_clerkId", (q: any) => q.eq("clerkId", args.verifiedUserId))
+      .unique();
+    if (!verifiedUser || verifiedUser.familyId !== familyId) {
+      throw appError("FAMILY_ACCESS_DENIED", "Dieses Familienmitglied ist nicht verfügbar.");
+    }
+
+    // Defense-in-depth: trust the server's stored key as the anchor, not the
+    // client-submitted value. Reject if the scanned key no longer matches the
+    // current server key or if the fingerprint is inconsistent with it.
+    if (!verifiedUser.publicKey || !publicKeysMatch(verifiedUser.publicKey, args.publicKey)) {
+      throw appError("KEY_VERIFICATION_MISMATCH", "Der übermittelte Schlüssel stimmt nicht mit dem aktuellen Server-Schlüssel überein.");
+    }
+    const expectedFingerprint = await computeKeyFingerprint(args.publicKey);
+    if (expectedFingerprint !== args.fingerprint) {
+      throw appError("KEY_VERIFICATION_MISMATCH", "Der Fingerprint stimmt nicht mit dem öffentlichen Schlüssel überein.");
+    }
+
+    const existing = await ctx.db
+      .query("keyVerifications")
+      .withIndex("by_verifierId_verifiedUserId", (q: any) => q.eq("verifierId", userId).eq("verifiedUserId", args.verifiedUserId))
+      .first();
+
+    const now = Date.now();
+    const record = {
+      familyId,
+      verifierId: userId,
+      verifiedUserId: args.verifiedUserId,
+      publicKey: args.publicKey,
+      fingerprint: args.fingerprint,
+      createdAt: now,
+    };
+
+    let verificationId;
+    if (existing) {
+      verificationId = existing._id;
+      await ctx.db.patch(existing._id, record);
+    } else {
+      verificationId = await ctx.db.insert("keyVerifications", record);
+    }
+
+    await ctx.db.insert("activityFeedEntries", {
+      familyId,
+      actorId: userId,
+      type: "key_verified",
+      entityType: "user",
+      entityId: args.verifiedUserId,
+      summary: `${user.name ?? user.email ?? userId} hat den E2EE-Schlüssel von ${verifiedUser.name ?? verifiedUser.email ?? args.verifiedUserId} verifiziert.`,
+      metadata: { verifiedUserId: args.verifiedUserId, fingerprint: args.fingerprint },
+      createdAt: now,
+    });
+
+    return await ctx.db.get(verificationId);
+}
+
+export const verifyParticipantKey = mutation({
+  args: { verifiedUserId: v.string(), publicKey: v.string(), fingerprint: v.string() },
+  handler: (ctx, args) => verifyParticipantKeyHandler(ctx, args),
+});
+
+export async function getVerificationStatusHandler(
+  ctx: { auth: Auth; db: any },
+  args: { verifiedUserId: string },
+) {
+    const { userId, familyId } = await requireUser(ctx);
+    const verification = await ctx.db
+      .query("keyVerifications")
+      .withIndex("by_verifierId_verifiedUserId", (q: any) => q.eq("verifierId", userId).eq("verifiedUserId", args.verifiedUserId))
+      .first();
+    if (!verification || verification.familyId !== familyId) return null;
+
+    // TOFU: a stored verification only counts while the verified key still
+    // matches the current server key. After a key rotation the badge must
+    // downgrade to "not verified" instead of vouching for the new key. We also
+    // re-check current shared-family membership: a verification must not keep
+    // vouching for someone who has since left (or moved to another) family, even
+    // if they kept the same key. Comparison is canonical, not raw-string.
+    const verifiedUser = await ctx.db
+      .query("users")
+      .withIndex("by_clerkId", (q: any) => q.eq("clerkId", args.verifiedUserId))
+      .unique();
+    if (!verifiedUser || verifiedUser.familyId !== familyId) return null;
+    if (!publicKeysMatch(verifiedUser.publicKey, verification.publicKey)) return null;
+
+    return verification;
+}
+
+export const getVerificationStatus = query({
+  args: { verifiedUserId: v.string() },
+  handler: (ctx, args) => getVerificationStatusHandler(ctx, args),
+});
+
+// Pull side of the bidirectional sync for key_verifications (6-4 AC4). Returns
+// the caller's currently-VALID verifications only — TOFU-filtered the same way
+// getVerificationStatus is: a record is excluded once the verified user leaves
+// the family or rotates their key. The client reconcile mirrors exactly this
+// set, so locally cached rows for rotated/expired keys are pruned automatically.
+export async function listMyVerificationsHandler(ctx: { auth: Auth; db: any }) {
+    const { userId, familyId } = await requireUser(ctx);
+    const records = await ctx.db
+      .query("keyVerifications")
+      .withIndex("by_verifierId_verifiedUserId", (q: any) => q.eq("verifierId", userId))
+      .take(500);
+
+    const valid: typeof records = [];
+    for (const record of records) {
+      if (record.familyId !== familyId) continue;
+      const verifiedUser = await ctx.db
+        .query("users")
+        .withIndex("by_clerkId", (q: any) => q.eq("clerkId", record.verifiedUserId))
+        .unique();
+      if (!verifiedUser || verifiedUser.familyId !== familyId) continue;
+      if (!publicKeysMatch(verifiedUser.publicKey, record.publicKey)) continue;
+      valid.push(record);
+    }
+    return valid;
+}
+
+export const listMyVerifications = query({
+  args: {},
+  handler: (ctx) => listMyVerificationsHandler(ctx),
 });

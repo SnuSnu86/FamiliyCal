@@ -25,6 +25,7 @@ export class CalendarEvent extends Model {
   @field("rrule") rrule?: string;
   @field("timezone_id") timezoneId?: string;
   @field("floating_time") floatingTime!: boolean;
+  @field("is_private") isPrivate?: boolean;
   @field("veto_status") vetoStatus?: string;
   @field("veto_reason") vetoReason?: string;
   @field("veto_child_id") vetoChildId?: string;

@@ -13,7 +13,9 @@
       "resizeMode": "contain",
       "backgroundColor": "#0D87E1"
     },
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": true
     },
@@ -38,7 +40,6 @@
       "expo-font",
       "expo-secure-store",
       "expo-dev-client",
-      "@skam22/watermelondb-expo-plugin",
       [
         "expo-build-properties",
         {
@@ -48,9 +49,18 @@
           "android": {
             "kotlinVersion": "2.1.20",
             "packagingOptions": {
-              "pickFirst": ["**/libc++_shared.so"]
+              "pickFirst": [
+                "**/libc++_shared.so"
+              ]
             }
           }
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Zugriff auf die Kamera wird benötigt, um Schlüssel-QR-Codes zu scannen.",
+          "barcodeScannerEnabled": true
         }
       ]
     ],

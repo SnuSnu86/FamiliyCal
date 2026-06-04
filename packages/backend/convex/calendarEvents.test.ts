@@ -1,33 +1,66 @@
 import { describe, expect, test } from "@jest/globals";
 import { ConvexError } from "convex/values";
-import { clearVetoHandler, deleteEventHandler, proposeEventForCaregiverHandler, raiseVetoHandler, sanitizeCaregiverEvent, validateDraftConfirmationReview } from "./calendarEvents";
+import {
+  clearVetoHandler,
+  deleteEventHandler,
+  eventOverlapsCaregiverRange,
+  proposeEventForCaregiverHandler,
+  raiseVetoHandler,
+  sanitizeCaregiverEvent,
+  validateDraftConfirmationReview,
+  validateVetoFieldChange,
+} from "./calendarEvents";
 
 describe("sanitizeCaregiverEvent", () => {
   test("keeps public event details visible", () => {
     const event = {
+      _id: "event-1",
+      clientId: "client-1",
       title: "Familienessen",
       description: "Bei Oma",
+      startDate: "2026-06-05T08:00:00.000Z",
+      endDate: "2026-06-05T09:00:00.000Z",
+      allDay: false,
       floatingTime: false,
+      creatorId: "parent-1",
+      vetoReason: "internal",
     };
 
-    expect(sanitizeCaregiverEvent(event)).toEqual(event);
+    expect(sanitizeCaregiverEvent(event)).toEqual({
+      _id: "event-1",
+      clientId: "client-1",
+      title: "Familienessen",
+      description: "Bei Oma",
+      startDate: "2026-06-05T08:00:00.000Z",
+      endDate: "2026-06-05T09:00:00.000Z",
+      allDay: false,
+      status: undefined,
+    });
   });
 
   test("redacts private event details for caregiver access", () => {
     expect(
       sanitizeCaregiverEvent({
+        _id: "event-1",
+        clientId: "client-1",
         title: "Arzttermin",
         description: "Diagnose",
+        startDate: "2026-06-05T08:00:00.000Z",
+        endDate: "2026-06-05T09:00:00.000Z",
+        allDay: false,
         floatingTime: true,
         rrule: "FREQ=WEEKLY",
         vetoReason: "Privat",
       }),
     ).toEqual({
+      _id: "event-1",
+      clientId: "client-1",
       title: "Privater Termin",
       description: undefined,
-      floatingTime: true,
-      rrule: undefined,
-      vetoReason: undefined,
+      startDate: "2026-06-05T08:00:00.000Z",
+      endDate: "2026-06-05T09:00:00.000Z",
+      allDay: false,
+      status: undefined,
     });
   });
 });
@@ -114,6 +147,28 @@ describe("draft event review permissions", () => {
   });
 });
 
+describe("veto sync validation", () => {
+  test("rejects editing an existing veto as another child without changing veto status", () => {
+    expect(() =>
+      validateVetoFieldChange(
+        { role: "ROLE-004", clerkId: "child-2" },
+        { vetoStatus: "vetoed", vetoReason: "Training", vetoChildId: "child-1" },
+        { vetoStatus: "vetoed", vetoReason: "Geändert", vetoChildId: "child-1" },
+      ),
+    ).toThrow(ConvexError);
+  });
+
+  test("allows parents to clear an existing veto", () => {
+    expect(
+      validateVetoFieldChange(
+        { role: "ROLE-002", clerkId: "parent-1" },
+        { vetoStatus: "vetoed", vetoReason: "Training", vetoChildId: "child-1" },
+        { vetoStatus: undefined, vetoReason: undefined, vetoChildId: undefined },
+      ),
+    ).toBe(true);
+  });
+});
+
 function createVetoCtx(user: any, event: any) {
   return {
     auth: { getUserIdentity: jest.fn().mockResolvedValue({ subject: user.clerkId }) },
@@ -196,5 +251,58 @@ describe("deleteEventHandler", () => {
       "activityFeedEntries",
       expect.objectContaining({ familyId: "family-1", summary: "Terminvorschlag abgelehnt" }),
     );
+  });
+
+  test("rejects deleting a confirmed event through the draft rejection mutation", async () => {
+    const ctx = {
+      auth: { getUserIdentity: jest.fn().mockResolvedValue({ subject: "owner-clerk" }) },
+      db: {
+        get: jest.fn().mockResolvedValue({ _id: "event-1", familyId: "family-1", status: "confirmed" }),
+        delete: jest.fn(),
+        insert: jest.fn(),
+        query: jest.fn((table: string) => ({
+          withIndex: jest.fn(() => ({
+            first: jest.fn().mockResolvedValue(table === "users" ? { clerkId: "owner-clerk", familyId: "family-1", role: "ROLE-001" } : null),
+          })),
+        })),
+      },
+    };
+
+    await expect(deleteEventHandler(ctx as any, { eventId: "event-1" as any, familyId: "family-1" as any })).rejects.toBeInstanceOf(ConvexError);
+    expect(ctx.db.delete).not.toHaveBeenCalled();
+    expect(ctx.db.insert).not.toHaveBeenCalled();
+  });
+});
+
+describe("eventOverlapsCaregiverRange", () => {
+  test("compares timestamps by parsed time instead of lexical string order", () => {
+    expect(
+      eventOverlapsCaregiverRange(
+        {
+          startDate: "2026-06-05T10:00:00+02:00",
+          endDate: "2026-06-05T11:00:00+02:00",
+        },
+        {
+          startDate: "2026-06-05T07:30:00.000Z",
+          endDate: "2026-06-05T08:30:00.000Z",
+        },
+      ),
+    ).toBe(true);
+  });
+
+  test("keeps recurring events that started before the requested range", () => {
+    expect(
+      eventOverlapsCaregiverRange(
+        {
+          startDate: "2026-05-01T08:00:00.000Z",
+          endDate: "2026-05-01T09:00:00.000Z",
+          rrule: "FREQ=WEEKLY",
+        },
+        {
+          startDate: "2026-06-05T00:00:00.000Z",
+          endDate: "2026-06-12T00:00:00.000Z",
+        },
+      ),
+    ).toBe(true);
   });
 });

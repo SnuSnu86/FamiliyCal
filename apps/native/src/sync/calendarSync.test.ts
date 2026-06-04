@@ -18,6 +18,7 @@ function createEvent(overrides: Record<string, unknown> = {}) {
     rrule: undefined,
     timezoneId: "Europe/Berlin",
     floatingTime: false,
+    isPrivate: false,
     vetoStatus: undefined,
     vetoReason: undefined,
     vetoChildId: undefined,
@@ -103,6 +104,26 @@ test("deleted synced events are deleted on the server and destroyed locally", as
   assert(result.synced.length === 1, "deleted event should sync");
   expect(convexClient.mutation).toHaveBeenCalledWith(expect.anything(), { eventId: "server_evt_deleted", familyId: "fam_1" });
   expect(deleted.destroyPermanently).toHaveBeenCalled();
+});
+
+test("sync writes server isPrivate value into local model when field is unchanged locally", async () => {
+  const event = createEvent({
+    serverId: "server_evt_private",
+    isPrivate: false,
+    _raw: { _status: "updated", _changed: "title" },
+  });
+  const convexClient = {
+    mutation: async (_mutationRef: unknown, payload: any) => ({
+      serverId: "server_evt_private",
+      serverRecord: { ...payload, serverId: "server_evt_private", title: "Lokal bleibt", isPrivate: true },
+    }),
+  };
+
+  const result = await syncPendingCalendarEvents({ db: createDb([event]), convexClient });
+
+  assert(result.synced.length === 1, "private sync event should sync");
+  assert(event.isPrivate === true, "server-winning isPrivate should be written to local model");
+  assert(event.title === "Termin", "locally changed title should remain local");
 });
 
 test("updated synced events are uploaded with resource server ids", async () => {

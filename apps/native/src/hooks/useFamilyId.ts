@@ -1,6 +1,5 @@
-import { useUser } from "@clerk/expo";
+import { useConvexAuth, useQuery } from "convex/react";
 import { api } from "@packages/backend/convex/_generated/api";
-import { useQuery } from "convex/react";
 
 /**
  * Resolves the active user's family id from the Convex-mapped user record.
@@ -11,10 +10,10 @@ import { useQuery } from "convex/react";
  * user has no family yet.
  */
 export function useFamilyId(): string | undefined {
-  const { user } = useUser();
+  const { isAuthenticated } = useConvexAuth();
   const mappedUser = useQuery(
-    api.users.getUserByClerkId,
-    user?.id ? { clerkId: user.id } : "skip",
+    api.users.getCurrentUser,
+    isAuthenticated ? {} : "skip",
   );
   return mappedUser?.familyId ?? undefined;
 }

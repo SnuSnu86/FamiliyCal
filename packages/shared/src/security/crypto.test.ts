@@ -10,6 +10,9 @@ import {
   exportPublicKey,
   generateE2EKeyPair,
   importPublicKey,
+  computeKeyFingerprint,
+  canonicalizePublicKey,
+  publicKeysMatch,
 } from "./crypto";
 
 if (!globalThis.crypto) {
@@ -50,6 +53,39 @@ async function testEncryptDecryptMessageWithSharedSecret() {
   assert.equal(decrypted, "Geheime Familiennachricht 🔒");
 }
 
+async function testComputeKeyFingerprint() {
+  const fingerprint = await computeKeyFingerprint("public-key-fixture");
+  const fingerprintAgain = await computeKeyFingerprint("public-key-fixture");
+  assert.equal(fingerprint, fingerprintAgain);
+  assert.match(fingerprint, /^[a-f0-9]{64}$/);
+  assert.notEqual(fingerprint, await computeKeyFingerprint("different-public-key-fixture"));
+}
+
+async function testCanonicalizePublicKeyIgnoresSerializationDifferences() {
+  const base = { kty: "EC", crv: "P-256", x: "abc", y: "def" };
+  // Same key material, different JWK field order + extra optional members.
+  const a = JSON.stringify({ x: "abc", crv: "P-256", kty: "EC", y: "def", ext: true, key_ops: [] });
+  const b = JSON.stringify(base);
+  assert.equal(canonicalizePublicKey(a), canonicalizePublicKey(b));
+  assert.equal(canonicalizePublicKey(b), "P-256:abc:def");
+  assert.ok(publicKeysMatch(a, b));
+  // Different coordinates ⇒ different key ⇒ no match.
+  assert.equal(publicKeysMatch(a, JSON.stringify({ kty: "EC", crv: "P-256", x: "zzz", y: "def" })), false);
+  // Fail-closed on missing/garbage input.
+  assert.equal(publicKeysMatch(undefined, b), false);
+  assert.equal(publicKeysMatch("not-json", b), false);
+  assert.throws(() => canonicalizePublicKey("not-json"));
+}
+
+async function testCanonicalizeRoundTripsRealExportedKey() {
+  const pair = await generateE2EKeyPair();
+  const exported = await exportPublicKey(pair.publicKey);
+  const reimported = await exportPublicKey(await importPublicKey(exported));
+  // Even if re-export reorders/adds fields, canonical form is stable.
+  assert.equal(canonicalizePublicKey(exported), canonicalizePublicKey(reimported));
+  assert.ok(publicKeysMatch(exported, reimported));
+}
+
 async function testDecryptMessageRejectsWrongSharedSecret() {
   const alice = await generateE2EKeyPair();
   const bob = await generateE2EKeyPair();
@@ -79,6 +115,9 @@ async function testEncryptDecryptPrivateKey() {
 
 await testDeriveMasterKey();
 await testGenerateE2EKeyPairAndExportPublicKey();
+await testComputeKeyFingerprint();
+await testCanonicalizePublicKeyIgnoresSerializationDifferences();
+await testCanonicalizeRoundTripsRealExportedKey();
 await testEncryptDecryptPrivateKey();
 await testEncryptDecryptMessageWithSharedSecret();
 await testDecryptMessageRejectsWrongSharedSecret();

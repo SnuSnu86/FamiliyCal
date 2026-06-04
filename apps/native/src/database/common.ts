@@ -1,6 +1,7 @@
 import { Album } from "./models/Album";
 import { CalendarEvent } from "./models/CalendarEvent";
 import { Family } from "./models/Family";
+import { KeyVerification } from "./models/KeyVerification";
 import { List } from "./models/List";
 import { Memo } from "./models/Memo";
 import { Note } from "./models/Note";
@@ -20,4 +21,5 @@ export const modelClasses = [
   Memo,
   List,
   Album,
+  KeyVerification,
 ];

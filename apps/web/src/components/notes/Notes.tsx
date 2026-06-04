@@ -1,6 +1,7 @@
 "use client";
 
 import { useUser } from "@clerk/nextjs";
+import { useAccountMapping } from "@packages/ui";
 import { api } from "@packages/backend/convex/_generated/api";
 import { useMutation, useQuery } from "convex/react";
 import Image from "next/image";
@@ -11,15 +12,19 @@ import NoteItem from "./NoteItem";
 
 const Notes = () => {
   const [search, setSearch] = useState("");
-  const { isLoaded, isSignedIn, user } = useUser();
+  const { isLoaded, isSignedIn } = useUser();
   const [timeoutReached, setTimeoutReached] = useState(false);
+  const [retryKey, setRetryKey] = useState(0);
 
-  const mappedUser = useQuery(
-    api.users.getUserByClerkId,
-    isLoaded && isSignedIn && user?.id ? { clerkId: user.id } : "skip",
-  );
-  const isWaitingForMapping =
-    isLoaded && isSignedIn && (mappedUser === null || mappedUser === undefined);
+  const {
+    bootstrapFailed,
+    isWaitingForMapping,
+    mappedUser,
+    retryBootstrap,
+  } = useAccountMapping({
+    enabled: isLoaded && isSignedIn,
+    retryKey,
+  });
 
   useEffect(() => {
     if (!isWaitingForMapping) {
@@ -31,7 +36,7 @@ const Notes = () => {
       setTimeoutReached(true);
     }, 10000);
     return () => clearTimeout(timer);
-  }, [isWaitingForMapping]);
+  }, [isWaitingForMapping, retryKey]);
 
   const allNotes = useQuery(
     api.notes.getNotes,
@@ -47,16 +52,26 @@ const Notes = () => {
       )
     : allNotes;
 
+  if (!isLoaded) {
+    return <MappingSkeleton />;
+  }
+
   if (isWaitingForMapping) {
-    if (timeoutReached) {
+    if (timeoutReached || bootstrapFailed) {
       return (
         <div className="container pb-10 flex flex-col items-center justify-center min-h-[400px] text-center" aria-label="Fehler bei der Konto-Synchronisierung">
           <h2 className="text-xl font-semibold text-red-600 mb-2">Verbindung fehlgeschlagen</h2>
           <p className="text-sm text-[#6F675E] mb-6 max-w-md">
-            Dein Konto konnte nicht mit FamilyCal synchronisiert werden. Das kann an einer Netzwerkverzögerung oder Serverproblemen liegen.
+            {bootstrapFailed
+              ? "Clerk und Convex konnten nicht verbunden werden. Prüfe in Clerk die Convex-Integration (Sessions → aud = convex) und melde dich erneut an."
+              : "Dein Konto konnte nicht mit FamilyCal synchronisiert werden. Das kann an einer Netzwerkverzögerung oder Serverproblemen liegen."}
           </p>
           <button
-            onClick={() => window.location.reload()}
+            onClick={() => {
+              setTimeoutReached(false);
+              retryBootstrap();
+              setRetryKey((prev) => prev + 1);
+            }}
             className="px-4 py-2 bg-[#0D87E1] text-white rounded-md hover:bg-[#0b76c5] transition-colors"
           >
             Erneut versuchen
@@ -64,10 +79,6 @@ const Notes = () => {
         </div>
       );
     }
-    return <MappingSkeleton />;
-  }
-
-  if (!isLoaded) {
     return <MappingSkeleton />;
   }
 

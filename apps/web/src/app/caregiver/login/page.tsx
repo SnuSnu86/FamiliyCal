@@ -15,21 +15,27 @@ export default function CaregiverLoginPage() {
     setError("");
     setIsSubmitting(true);
 
-    const response = await fetch("/api/verify-pin", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ pin }),
-    });
-    const data = await response.json().catch(() => ({}));
-    setIsSubmitting(false);
+    try {
+      const response = await fetch("/api/verify-pin", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pin }),
+      });
+      const data = await response.json().catch(() => ({}));
 
-    if (!response.ok) {
-      setError(data.error ?? "Der PIN ist ungültig oder abgelaufen.");
+      if (!response.ok) {
+        setError(data.error ?? "Der PIN ist ungültig oder abgelaufen.");
+        inputRef.current?.focus();
+        return;
+      }
+
+      router.push("/caregiver/dashboard");
+    } catch {
+      setError("PIN konnte nicht geprüft werden. Bitte versuche es erneut.");
       inputRef.current?.focus();
-      return;
+    } finally {
+      setIsSubmitting(false);
     }
-
-    router.push("/caregiver/dashboard");
   }
 
   return (

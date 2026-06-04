@@ -1,6 +1,7 @@
 "use client";
 
-import { SignUp, useAuth, useUser } from "@clerk/nextjs";
+import { SignUp, useAuth } from "@clerk/nextjs";
+import { useAccountMapping } from "@packages/ui";
 import { api } from "@packages/backend/convex/_generated/api";
 import { useMutation, useQuery } from "convex/react";
 import { useSearchParams } from "next/navigation";
@@ -9,21 +10,18 @@ import { useState } from "react";
 export default function InvitePage() {
   const searchParams = useSearchParams();
   const token = searchParams.get("token") ?? "";
-  const { isSignedIn } = useAuth();
-  const { user, isLoaded: isUserLoaded } = useUser();
+  const { isLoaded, isSignedIn } = useAuth();
   const invitation = useQuery(api.invitations.getInvitationByToken, token ? { token } : "skip");
   const acceptInvitation = useMutation(api.invitations.acceptInvitation);
-  
-  const mappedUser = useQuery(
-    api.users.getUserByClerkId,
-    isUserLoaded && isSignedIn && user?.id ? { clerkId: user.id } : "skip"
-  );
+
+  const { isWaitingForMapping, mappedUser } = useAccountMapping({
+    enabled: isLoaded && isSignedIn,
+    invitationToken: token || null,
+  });
 
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPending, setIsPending] = useState(false);
-
-  const isWaitingForMapping = isSignedIn && (mappedUser === null || mappedUser === undefined);
 
   async function accept() {
     if (isPending || !token) return;
@@ -39,7 +37,7 @@ export default function InvitePage() {
     }
   }
 
-  if (isWaitingForMapping) {
+  if (!isLoaded || (isSignedIn && isWaitingForMapping)) {
     return <MappingSkeleton />;
   }
 

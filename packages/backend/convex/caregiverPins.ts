@@ -2,6 +2,8 @@ import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 
 export const CAREGIVER_PIN_TTL_MS = 10 * 60 * 1000;
+export const CAREGIVER_PIN_ATTEMPT_WINDOW_MS = 10 * 60 * 1000;
+export const CAREGIVER_PIN_MAX_ATTEMPTS = 5;
 const CAREGIVER_PIN_ROLES = new Set(["ROLE-001", "ROLE-002"]);
 
 type CaregiverPinUser = {
@@ -46,6 +48,10 @@ export function isActiveCaregiverPin(pin: { expiresAt: number }, now = Date.now(
   return pin.expiresAt > now;
 }
 
+export function blocksCaregiverPinCandidate(existing: { expiresAt: number } | null | undefined, now = Date.now()) {
+  return !!existing && isActiveCaregiverPin(existing, now);
+}
+
 export function validateCaregiverPinRecord(
   record: ({ familyId: unknown; expiresAt: number; familyName?: string | null } & Record<string, unknown>) | null,
   now = Date.now(),
@@ -58,6 +64,29 @@ export function validateCaregiverPinRecord(
     familyId: record.familyId,
     familyName: record.familyName ?? "Unbekannt",
     role: "ROLE-005",
+  };
+}
+
+export function isCaregiverPinLocked(
+  attempt: { attempts: number; firstAttemptAt: number; lockedUntil?: number } | null | undefined,
+  now = Date.now(),
+) {
+  return !!attempt?.lockedUntil && attempt.lockedUntil > now;
+}
+
+export function nextCaregiverPinAttempt(
+  attempt: { attempts: number; firstAttemptAt: number; lockedUntil?: number } | null | undefined,
+  now = Date.now(),
+) {
+  if (!attempt || now - attempt.firstAttemptAt >= CAREGIVER_PIN_ATTEMPT_WINDOW_MS) {
+    return { attempts: 1, firstAttemptAt: now, lockedUntil: undefined };
+  }
+
+  const attempts = attempt.attempts + 1;
+  return {
+    attempts,
+    firstAttemptAt: attempt.firstAttemptAt,
+    lockedUntil: attempts >= CAREGIVER_PIN_MAX_ATTEMPTS ? now + CAREGIVER_PIN_ATTEMPT_WINDOW_MS : attempt.lockedUntil,
   };
 }
 
@@ -90,7 +119,6 @@ export const generatePin = mutation({
   args: {},
   handler: async (ctx) => {
     const user = await getAuthorizedUser(ctx);
-    await deleteFamilyPins(ctx, user.familyId);
 
     // Globale Eindeutigkeit der PIN sicherstellen: Bei Kollision (gleiche PIN in anderer Familie)
     // neu generieren, damit verifyPin via by_pin-Index deterministisch die richtige Familie trifft.
@@ -104,7 +132,7 @@ export const generatePin = mutation({
         .query("caregiverPins")
         .withIndex("by_pin", (q: any) => q.eq("pin", candidate.pin))
         .first();
-      if (!existing) {
+      if (!blocksCaregiverPinCandidate(existing)) {
         record = candidate;
         break;
       }
@@ -114,6 +142,7 @@ export const generatePin = mutation({
       throw new ConvexError("PIN konnte nicht generiert werden. Bitte erneut versuchen.");
     }
 
+    await deleteFamilyPins(ctx, user.familyId);
     await ctx.db.insert("caregiverPins", record as any);
     return record;
   },
@@ -153,5 +182,50 @@ export const verifyPin = query({
       ...record,
       familyName: family?.name,
     });
+  },
+});
+
+export const verifyAndConsumePin = mutation({
+  args: {
+    pin: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const attempt = await ctx.db
+      .query("caregiverPinAttempts")
+      .withIndex("by_pin", (q) => q.eq("pin", args.pin))
+      .first();
+
+    if (isCaregiverPinLocked(attempt, now)) {
+      return { valid: false as const, error: "Zu viele Fehlversuche. Bitte warte kurz und versuche es erneut." };
+    }
+
+    const record = await ctx.db
+      .query("caregiverPins")
+      .withIndex("by_pin", (q) => q.eq("pin", args.pin))
+      .first();
+
+    if (!record || !isActiveCaregiverPin(record, now)) {
+      const nextAttempt = nextCaregiverPinAttempt(attempt, now);
+      if (attempt) {
+        await ctx.db.patch(attempt._id, nextAttempt);
+      } else {
+        await ctx.db.insert("caregiverPinAttempts", { pin: args.pin, ...nextAttempt });
+      }
+      return validateCaregiverPinRecord(record ?? null, now);
+    }
+
+    const family = await ctx.db.get(record.familyId);
+    const result = validateCaregiverPinRecord({
+      ...record,
+      familyName: family?.name,
+    }, now);
+
+    if (result.valid) {
+      await ctx.db.delete(record._id);
+      if (attempt) await ctx.db.delete(attempt._id);
+    }
+
+    return result;
   },
 });

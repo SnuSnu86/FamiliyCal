@@ -117,6 +117,7 @@ function assignCalendarEventFields(localEvent: CalendarEvent, record: Record<str
     "rrule",
     "timezoneId",
     "floatingTime",
+    "isPrivate",
     "vetoStatus",
     "vetoReason",
     "vetoChildId",

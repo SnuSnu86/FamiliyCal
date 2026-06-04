@@ -45,6 +45,7 @@ export const calendarEventSchema = z
       .trim()
       .min(1, "Die Wiederholungsregel ist ungültig. Bitte prüfe Rhythmus und Enddatum.")
       .optional(),
+    is_private: z.boolean().optional(),
     timezone_id: z
       .string()
       .optional()

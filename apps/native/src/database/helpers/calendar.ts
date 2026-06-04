@@ -13,6 +13,7 @@ export type CreateLocalEventInput = {
   rrule?: string;
   timezone_id?: string;
   floating_time?: boolean;
+  is_private?: boolean;
   veto_status?: string;
   veto_reason?: string;
   veto_child_id?: string;
@@ -58,6 +59,7 @@ export async function createLocalEvent(
       event.rrule = eventData.rrule;
       event.timezoneId = eventData.timezone_id;
       event.floatingTime = eventData.floating_time ?? false;
+      event.isPrivate = eventData.is_private;
       event.vetoStatus = eventData.veto_status;
       event.vetoReason = eventData.veto_reason;
       event.vetoChildId = eventData.veto_child_id;

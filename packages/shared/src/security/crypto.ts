@@ -31,6 +31,47 @@ function utf8Bytes(value: string): Uint8Array {
   return new TextEncoder().encode(value);
 }
 
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export async function computeKeyFingerprint(publicKeyString: string): Promise<string> {
+  const { sha256 } = await import("@noble/hashes/sha2.js");
+  return bytesToHex(sha256(utf8Bytes(publicKeyString)));
+}
+
+// Out-of-band verification compares public keys by value. JWK serialization is
+// NOT canonical across platforms/libraries (field order, optional members like
+// ext/key_ops/alg, base64url padding), so a raw string `===` on the JSON can
+// reject two honest devices that hold the *same* key. The EC public point
+// (crv + x + y, base64url per the JWK spec) uniquely identifies a P-256 key, so
+// we canonicalize on those coordinates and compare canonical forms everywhere a
+// key equality check feeds an MitM decision.
+export function canonicalizePublicKey(serializedPublicKey: string): string {
+  let jwk: JsonWebKey;
+  try {
+    jwk = JSON.parse(serializedPublicKey) as JsonWebKey;
+  } catch {
+    throw new Error("Public key is not valid JSON and cannot be canonicalized");
+  }
+  if (jwk.kty !== "EC" || !jwk.crv || !jwk.x || !jwk.y) {
+    throw new Error("Unsupported public key format for canonicalization");
+  }
+  return `${jwk.crv}:${jwk.x}:${jwk.y}`;
+}
+
+// Convenience for sinks that want a boolean equality without try/catch noise.
+// Returns false if either side is missing or unparseable (fail-closed: an
+// unparseable key never counts as a match).
+export function publicKeysMatch(a?: string | null, b?: string | null): boolean {
+  if (!a || !b) return false;
+  try {
+    return canonicalizePublicKey(a) === canonicalizePublicKey(b);
+  } catch {
+    return false;
+  }
+}
+
 async function importAesGcmKey(masterKey: Uint8Array): Promise<CryptoKey> {
   if (masterKey.byteLength !== MASTER_KEY_BYTES) {
     throw new Error("Master key must be 32 bytes for AES-GCM-256");
@@ -85,6 +126,18 @@ export async function importPublicKey(serializedPublicKey: string): Promise<Cryp
 export async function importPrivateKey(serializedPrivateKey: string): Promise<CryptoKey> {
   const jwk = JSON.parse(serializedPrivateKey) as JsonWebKey;
   return getCrypto().subtle.importKey("jwk", jwk, { name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey", "deriveBits"]);
+}
+
+// Out-of-band verification must attest to the key material the device actually
+// holds, not a value fetched from the (potentially compromised) server. We
+// reconstruct the public key from the locally stored private JWK and serialize
+// it through the same exportPublicKey path that produced the uploaded key, so
+// the string is byte-identical to the honest server copy on the same platform.
+export async function derivePublicKeyFromPrivate(serializedPrivateKey: string): Promise<string> {
+  const jwk = JSON.parse(serializedPrivateKey) as JsonWebKey;
+  const publicJwk: JsonWebKey = { kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y, ext: true, key_ops: [] };
+  const publicKey = await getCrypto().subtle.importKey("jwk", publicJwk, { name: "ECDH", namedCurve: "P-256" }, true, []);
+  return exportPublicKey(publicKey);
 }
 
 export async function deriveSharedSecret(privateKey: CryptoKey, publicKey: CryptoKey): Promise<CryptoKey> {

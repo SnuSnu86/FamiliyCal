@@ -37,6 +37,63 @@ async function findPendingInvitation(ctx: any, args: { invitationToken?: string;
   return invitations.find((invitation: any) => invitation.status === "pending") ?? null;
 }
 
+type UpsertClerkUserArgs = {
+  clerkId: string;
+  email: string;
+  name?: string;
+  imageUrl?: string;
+  invitationToken?: string;
+};
+
+async function upsertClerkUser(ctx: any, args: UpsertClerkUserArgs) {
+  assertValidClerkUser(args);
+
+  const existingUser = await ctx.db
+    .query("users")
+    .withIndex("by_clerkId", (q: any) => q.eq("clerkId", args.clerkId))
+    .unique();
+
+  const normalizedUser = {
+    clerkId: args.clerkId,
+    email: args.email.trim().toLowerCase(),
+    name: args.name,
+    imageUrl: args.imageUrl,
+  };
+
+  if (existingUser) {
+    if (args.invitationToken && existingUser.familyId) {
+      const invitation = await ctx.db
+        .query("invitations")
+        .withIndex("by_token", (q: any) => q.eq("token", args.invitationToken))
+        .unique();
+      if (invitation && invitation.familyId === existingUser.familyId) {
+        await ctx.db.patch(existingUser._id, normalizedUser);
+        return existingUser._id;
+      }
+      throw new ConvexError("User already belongs to a family");
+    }
+    await ctx.db.patch(existingUser._id, normalizedUser);
+    return existingUser._id;
+  }
+
+  const invitation = await findPendingInvitation(ctx, {
+    invitationToken: args.invitationToken,
+    email: args.email,
+  });
+
+  const userId = await ctx.db.insert("users", {
+    ...normalizedUser,
+    familyId: invitation?.familyId,
+    role: invitation?.role ?? DEFAULT_ROLE,
+  });
+
+  if (invitation) {
+    await ctx.db.patch(invitation._id, { status: "accepted" });
+  }
+
+  return userId;
+}
+
 export const upsertUserFromWebhook = mutation({
   args: {
     clerkId: v.string(),
@@ -45,53 +102,33 @@ export const upsertUserFromWebhook = mutation({
     imageUrl: v.optional(v.string()),
     invitationToken: v.optional(v.string()),
   },
+  handler: async (ctx, args) => upsertClerkUser(ctx, args),
+});
+
+export const ensureCurrentUser = mutation({
+  args: {
+    invitationToken: v.optional(v.string()),
+  },
   handler: async (ctx, args) => {
-    assertValidClerkUser(args);
-
-    const existingUser = await ctx.db
-      .query("users")
-      .withIndex("by_clerkId", (q) => q.eq("clerkId", args.clerkId))
-      .unique();
-
-    const normalizedUser = {
-      clerkId: args.clerkId,
-      email: args.email.trim().toLowerCase(),
-      name: args.name,
-      imageUrl: args.imageUrl,
-    };
-
-    if (existingUser) {
-      if (args.invitationToken && existingUser.familyId) {
-        const invitation = await ctx.db
-          .query("invitations")
-          .withIndex("by_token", (q: any) => q.eq("token", args.invitationToken))
-          .unique();
-        if (invitation && invitation.familyId === existingUser.familyId) {
-          await ctx.db.patch(existingUser._id, normalizedUser);
-          return existingUser._id;
-        }
-        throw new ConvexError("User already belongs to a family");
-      }
-      await ctx.db.patch(existingUser._id, normalizedUser);
-      return existingUser._id;
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError("Authentication required");
     }
 
-    const invitation = await findPendingInvitation(ctx, {
+    const email = identity.email;
+    if (!email?.trim()) {
+      throw new ConvexError(
+        "Authenticated Clerk user is missing an email claim",
+      );
+    }
+
+    return await upsertClerkUser(ctx, {
+      clerkId: identity.subject,
+      email,
+      name: identity.name ?? undefined,
+      imageUrl: identity.pictureUrl ?? undefined,
       invitationToken: args.invitationToken,
-      email: args.email,
     });
-
-    const userId = await ctx.db.insert("users", {
-      ...normalizedUser,
-      familyId: invitation?.familyId,
-      role: invitation?.role ?? DEFAULT_ROLE,
-    });
-
-    if (invitation) {
-      await ctx.db.patch(invitation._id, { status: "accepted" });
-    }
-
-    return userId;
   },
 });
 

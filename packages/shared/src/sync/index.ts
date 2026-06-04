@@ -14,6 +14,7 @@ export type CalendarEventField =
   | "rrule"
   | "timezoneId"
   | "floatingTime"
+  | "isPrivate"
   | "vetoStatus"
   | "vetoReason"
   | "vetoChildId"
@@ -205,6 +206,7 @@ const CONTENT_FIELDS: CalendarEventField[] = [
   "rrule",
   "timezoneId",
   "floatingTime",
+  "isPrivate",
   "vetoStatus",
   "vetoReason",
   "vetoChildId",
@@ -594,4 +596,29 @@ export function mergeAlbumFields(
   }
 
   return { record, mergedFields };
+}
+
+// key_verifications sync is PULL-ONLY and server-authoritative: records are
+// created server-side by the verifyParticipantKey mutation, never locally, so
+// there is no client→server push payload or field-merge for this table. The
+// client mirror only needs to map a server record into the local snake_case
+// shape; public_key/fingerprint always come from the server.
+export type KeyVerificationLike = {
+  serverId?: string | null;
+  verifierId?: string | null;
+  verifiedUserId?: string | null;
+  publicKey?: string | null;
+  fingerprint?: string | null;
+  [key: string]: unknown;
+};
+
+export function mapServerKeyVerificationToLocal(serverRecord: KeyVerificationLike): Record<string, unknown> {
+  const camelRecord = toCamelCase<Record<string, unknown>>(serverRecord as Record<string, unknown>);
+  return toSnakeCase({
+    serverId: camelRecord.serverId ?? camelRecord._id,
+    verifierId: camelRecord.verifierId,
+    verifiedUserId: camelRecord.verifiedUserId,
+    publicKey: camelRecord.publicKey,
+    fingerprint: camelRecord.fingerprint,
+  }) as Record<string, unknown>;
 }

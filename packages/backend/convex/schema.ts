@@ -40,6 +40,13 @@ export default defineSchema({
     .index("by_pin", ["pin"])
     .index("by_familyId", ["familyId"]),
 
+  caregiverPinAttempts: defineTable({
+    pin: v.string(),
+    attempts: v.number(),
+    firstAttemptAt: v.number(),
+    lockedUntil: v.optional(v.number()),
+  }).index("by_pin", ["pin"]),
+
   users: defineTable({
     clerkId: v.string(),
     email: v.string(),
@@ -130,6 +137,7 @@ export default defineSchema({
     rrule: v.optional(v.string()),
     timezoneId: v.optional(v.string()),
     floatingTime: v.boolean(),
+    isPrivate: v.optional(v.boolean()),
     vetoStatus: v.optional(v.string()),
     vetoReason: v.optional(v.string()),
     vetoChildId: v.optional(v.string()),
@@ -141,7 +149,8 @@ export default defineSchema({
     .index("by_familyId", ["familyId"])
     .index("by_clientId", ["clientId"])
     .index("by_resourceId", ["resourceId"])
-    .index("by_vetoChildId", ["vetoChildId"]),
+    .index("by_vetoChildId", ["vetoChildId"])
+    .index("by_familyId_status", ["familyId", "status"]),
 
   virtualMembers: defineTable({
     familyId: v.id("families"),
@@ -191,6 +200,17 @@ export default defineSchema({
     .index("by_threadId_createdAt", ["threadId", "createdAt"])
     .index("by_senderId", ["senderId"]),
 
+  keyVerifications: defineTable({
+    familyId: v.id("families"),
+    verifierId: v.string(),
+    verifiedUserId: v.string(),
+    publicKey: v.string(),
+    fingerprint: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_verifierId_verifiedUserId", ["verifierId", "verifiedUserId"])
+    .index("by_familyId", ["familyId"]),
+
   secureChats: defineTable({
     threadId: v.id("chatThreads"),
     familyId: v.id("families"),
@@ -215,7 +235,8 @@ export default defineSchema({
       v.literal("list_deleted"),
       v.literal("album_updated"),
       v.literal("album_deleted"),
-      v.literal("quota_updated")
+      v.literal("quota_updated"),
+      v.literal("key_verified")
     ),
     entityType: v.union(
       v.literal("chatThread"),

@@ -63,6 +63,7 @@ const localEvent = {
   rrule: "FREQ=WEEKLY;COUNT=4",
   timezone_id: "Europe/Berlin",
   floating_time: true,
+  is_private: true,
   veto_status: "none",
   veto_reason: undefined,
   veto_child_id: undefined,
@@ -78,6 +79,7 @@ assert(syncPayload.allDay === false, "allDay false should be preserved in sync p
 assert(syncPayload.rrule === "FREQ=WEEKLY;COUNT=4", "rrule should be preserved in sync payload");
 assert(syncPayload.timezoneId === "Europe/Berlin", "timezoneId should be camelCase mapped and preserved");
 assert(syncPayload.floatingTime === true, "floatingTime should be camelCase mapped and preserved");
+assert(syncPayload.isPrivate === true, "isPrivate should be camelCase mapped and preserved");
 assert(syncPayload.resourceId === "resource_1", "resourceId should be camelCase mapped and preserved");
 assert(syncPayload.locallyChangedFields.includes("title"), "payload should include changed fields");
 
@@ -89,6 +91,7 @@ const merge = mergeCalendarEventFields(
     rrule: "FREQ=WEEKLY;COUNT=4",
     floatingTime: true,
     resourceId: "local_resource",
+    isPrivate: true,
     serverId: undefined,
   },
   {
@@ -98,10 +101,11 @@ const merge = mergeCalendarEventFields(
     rrule: "FREQ=DAILY;COUNT=2",
     floatingTime: false,
     resourceId: "server_resource",
+    isPrivate: false,
     serverId: "server_evt_1",
     updatedAt: 123,
   },
-  ["title", "rrule", "floatingTime", "resourceId"],
+  ["title", "rrule", "floatingTime", "resourceId", "isPrivate"],
 );
 
 assert(merge.record.title === "Local changed title", "locally changed title should win");
@@ -110,6 +114,7 @@ assert(merge.record.timezoneId === "Europe/Oslo", "unchanged local timezone shou
 assert(merge.record.rrule === "FREQ=WEEKLY;COUNT=4", "locally changed rrule should win");
 assert(merge.record.floatingTime === true, "locally changed floatingTime should win");
 assert(merge.record.resourceId === "local_resource", "locally changed resourceId should win and remain content data");
+assert(merge.record.isPrivate === true, "locally changed isPrivate should win and remain content data");
 assert(merge.record.serverId === "server_evt_1", "server sync metadata should win");
 assert(merge.mergedFields.title === "local", "title merge source should be local");
 assert(merge.mergedFields.description === "server", "description merge source should be server");

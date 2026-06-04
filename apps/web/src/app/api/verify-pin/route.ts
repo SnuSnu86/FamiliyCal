@@ -21,7 +21,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Bitte gib einen 6-stelligen PIN ein." }, { status: 400 });
     }
 
-    const result = await getConvexClient().query(api.caregiverPins.verifyPin, { pin });
+    const result = await getConvexClient().mutation(api.caregiverPins.verifyAndConsumePin, { pin });
     if (!result.valid) {
       return NextResponse.json({ error: result.error }, { status: 401 });
     }

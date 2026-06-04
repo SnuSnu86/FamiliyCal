@@ -10,14 +10,29 @@ let globalConvexClient: ConvexHttpClient | null = null;
 const proposalSchema = z
   .object({
     title: z.string().trim().min(1),
-    startDate: z.string().datetime(),
-    endDate: z.string().datetime(),
-    allDay: z.boolean().default(false),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    startTime: z.string().regex(/^\d{2}:\d{2}$/),
+    endTime: z.string().regex(/^\d{2}:\d{2}$/),
     description: z.string().trim().optional(),
   })
-  .refine((value) => Date.parse(value.startDate) < Date.parse(value.endDate), {
+  .refine((value) => {
+    const start = Date.parse(`${value.date}T${value.startTime}`);
+    const end = Date.parse(`${value.date}T${value.endTime}`);
+    return Number.isFinite(start) && Number.isFinite(end) && start < end;
+  }, {
     message: "Die Startzeit muss vor der Endzeit liegen.",
-    path: ["endDate"],
+    path: ["endTime"],
+  })
+  .transform((value) => {
+    const startDate = new Date(`${value.date}T${value.startTime}`);
+    const endDate = new Date(`${value.date}T${value.endTime}`);
+    return {
+      title: value.title,
+      description: value.description,
+      startDate: startDate.toISOString(),
+      endDate: endDate.toISOString(),
+      allDay: false,
+    };
   });
 
 function getConvexClient() {
@@ -33,7 +48,14 @@ export async function POST(request: Request) {
     const session = token ? verifyToken(token) : null;
     if (!session) return NextResponse.json({ error: "Nicht angemeldet." }, { status: 401 });
 
-    const parsed = proposalSchema.safeParse(await request.json());
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json({ error: "Ungültige Termindaten." }, { status: 400 });
+    }
+
+    const parsed = proposalSchema.safeParse(body);
     if (!parsed.success) {
       return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Ungültige Termindaten." }, { status: 400 });
     }

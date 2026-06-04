@@ -39,13 +39,25 @@ This will log you into Convex, create or connect a project, and generate `packag
 
 ### 3. Configure Clerk for Convex
 
-Follow the official [Convex + Clerk guide](https://docs.convex.dev/auth/clerk).
+Follow the official [Clerk + Convex integration](https://dashboard.clerk.com/apps/setup/convex).
 
-In the Clerk dashboard, enable the Convex integration and copy the Clerk JWT issuer domain. Add it to your Convex environment variables as:
+1. In the Clerk dashboard, open **Convex integration** and select **Activate Convex integration**.
+2. Confirm **Sessions → Claims** includes `aud = convex`.
+3. Add your Clerk Frontend API URL to Convex:
 
 ```sh
-CLERK_JWT_ISSUER_DOMAIN=https://your-frontend-api.clerk.accounts.dev
+pnpm --filter @packages/backend exec convex env set CLERK_FRONTEND_API_URL https://your-instance.clerk.accounts.dev
 ```
+
+`packages/backend/convex/auth.config.ts` reads `CLERK_FRONTEND_API_URL` (with optional legacy fallback to `CLERK_JWT_ISSUER_DOMAIN`).
+
+4. Configure the Clerk webhook for account sync on web sign-up:
+
+- Endpoint: `https://your-web-app/api/auth/mapping`
+- Events: `user.created`, `user.updated`, `user.deleted`
+- Copy the signing secret into `apps/web/.env.local` as `CLERK_WEBHOOK_SECRET`
+
+Native and web clients also call `users.ensureCurrentUser` after sign-in, so local native testing works even before the webhook is reachable. The webhook remains the source of truth for profile updates from Clerk.
 
 If you want native social login, enable Google and Apple in Clerk as well.
 
@@ -64,6 +76,7 @@ Create `.env.local` files in `apps/web` and `apps/native` from the provided `.ex
 - Use `CONVEX_URL` from `packages/backend/.env.local` for both `NEXT_PUBLIC_CONVEX_URL` and `EXPO_PUBLIC_CONVEX_URL`
 - Use your Clerk publishable key for both app env files
 - Use your Clerk secret key in `apps/web/.env.local`
+- Set `CLERK_FRONTEND_API_URL=https://your-instance.clerk.accounts.dev` in all three env files (`packages/backend/.env.local`, `apps/web/.env.local`, `apps/native/.env`)
 
 ### 5. Run the apps
 

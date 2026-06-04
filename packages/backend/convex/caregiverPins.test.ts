@@ -3,10 +3,15 @@ import { describe, expect, test } from "@jest/globals";
 import { ConvexError } from "convex/values";
 import {
   CAREGIVER_PIN_TTL_MS,
+  CAREGIVER_PIN_ATTEMPT_WINDOW_MS,
+  CAREGIVER_PIN_MAX_ATTEMPTS,
   assertCanManageCaregiverPins,
+  blocksCaregiverPinCandidate,
   createCaregiverPinRecord,
   deleteFamilyPins,
+  isCaregiverPinLocked,
   isActiveCaregiverPin,
+  nextCaregiverPinAttempt,
   validateCaregiverPinRecord,
 } from "./caregiverPins";
 
@@ -98,6 +103,12 @@ describe("caregiverPins", () => {
     expect(deletedIds).toEqual(["pin_1", "pin_2"]);
   });
 
+  test("only active pins block regenerated candidates", () => {
+    expect(blocksCaregiverPinCandidate({ expiresAt: 1_001 }, 1_000)).toBe(true);
+    expect(blocksCaregiverPinCandidate({ expiresAt: 1_000 }, 1_000)).toBe(false);
+    expect(blocksCaregiverPinCandidate(null, 1_000)).toBe(false);
+  });
+
   test("validates an active PIN and returns family information", () => {
     const result = validateCaregiverPinRecord(
       {
@@ -135,6 +146,28 @@ describe("caregiverPins", () => {
     expect(validateCaregiverPinRecord(null, 1_000)).toEqual({
       valid: false,
       error: "PIN wurde nicht gefunden.",
+    });
+  });
+
+  test("tracks failed attempts in a rolling lockout window", () => {
+    let attempt = nextCaregiverPinAttempt(null, 1_000);
+    expect(attempt).toEqual({ attempts: 1, firstAttemptAt: 1_000, lockedUntil: undefined });
+
+    for (let index = 1; index < CAREGIVER_PIN_MAX_ATTEMPTS; index++) {
+      attempt = nextCaregiverPinAttempt(attempt, 1_000 + index);
+    }
+
+    expect(attempt.attempts).toBe(CAREGIVER_PIN_MAX_ATTEMPTS);
+    expect(attempt.lockedUntil).toBe(1_000 + CAREGIVER_PIN_MAX_ATTEMPTS - 1 + CAREGIVER_PIN_ATTEMPT_WINDOW_MS);
+    expect(isCaregiverPinLocked(attempt, attempt.lockedUntil! - 1)).toBe(true);
+    expect(isCaregiverPinLocked(attempt, attempt.lockedUntil!)).toBe(false);
+  });
+
+  test("resets failed attempts after the lockout window", () => {
+    expect(nextCaregiverPinAttempt({ attempts: 4, firstAttemptAt: 1_000 }, 1_000 + CAREGIVER_PIN_ATTEMPT_WINDOW_MS)).toEqual({
+      attempts: 1,
+      firstAttemptAt: 1_000 + CAREGIVER_PIN_ATTEMPT_WINDOW_MS,
+      lockedUntil: undefined,
     });
   });
 });

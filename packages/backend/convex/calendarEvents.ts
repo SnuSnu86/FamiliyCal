@@ -229,6 +229,7 @@ export const syncCalendarEvent = mutation({
       throw new ConvexError({ code: "EVENT_ACCESS_DENIED", message: "Dieser Termin gehört nicht zu deiner Familie." });
     }
 
+    let resourceName: string | undefined;
     if (args.resourceId) {
       const resource = await ctx.db.get(args.resourceId);
       if (!resource || resource.familyId !== args.familyId) {
@@ -237,6 +238,7 @@ export const syncCalendarEvent = mutation({
       if (resource.type !== "resource") {
         throw new ConvexError({ code: "INVALID_RESOURCE", message: "Diese Auswahl ist keine buchbare Ressource." });
       }
+      resourceName = resource.name;
     }
 
     if (existing) {
@@ -269,24 +271,26 @@ export const syncCalendarEvent = mutation({
         resourceId: record.resourceId as typeof args.resourceId,
         updatedAt: now,
       };
-      assertValidDateRange(patch.startDate, patch.endDate);
-      const resourceConflict = await detectResourceConflict(ctx, { ...patch, id: String(existing._id), clientId: patch.clientId }, existing._id);
-      const canBypassResourceConflict = assertRoleCanBypassResourceConflict(user, resourceConflict);
-      await ctx.db.patch(existing._id, patch);
+
       if (confirmsDraft && existing.creatorId === "scheduling-agent" && typeof existing.clientId === "string") {
+        patch.title = patch.title.replace(/^\[Vorschlag\]\s*/, "");
         const batchId = existing.clientId.replace(/-\d+$/, "");
         const siblingDrafts = await ctx.db
           .query("calendarEvents")
-          .withIndex("by_familyId", (q: any) => q.eq("familyId", args.familyId))
+          .withIndex("by_familyId_status", (q: any) => q.eq("familyId", args.familyId).eq("status", "draft"))
           .collect();
         await Promise.all(
           siblingDrafts
             .filter((event: any) => event._id !== existing._id && event.creatorId === "scheduling-agent" && event.status === "draft" && typeof event.clientId === "string" && event.clientId.startsWith(`${batchId}-`))
             .map((event: any) => ctx.db.delete(event._id)),
         );
-        patch.title = patch.title.replace(/^\[Vorschlag\]\s*/, "");
-        await ctx.db.patch(existing._id, { title: patch.title });
       }
+
+      assertValidDateRange(patch.startDate, patch.endDate);
+      const resourceConflict = await detectResourceConflict(ctx, { ...patch, id: String(existing._id), clientId: patch.clientId }, existing._id);
+      const canBypassResourceConflict = assertRoleCanBypassResourceConflict(user, resourceConflict);
+      await ctx.db.patch(existing._id, patch);
+
       await recordActivity(ctx, {
         familyId: args.familyId,
         actorId: userId,
@@ -302,6 +306,7 @@ export const syncCalendarEvent = mutation({
           createdBy: userId,
           eventAId: existing._id,
           eventBId: resourceConflict.event.id as any,
+          resourceName,
         });
       }
       await ctx.scheduler.runAfter(0, (internal as any).agents.archiveResolvedConflictThreads, { familyId: args.familyId });
@@ -340,6 +345,7 @@ export const syncCalendarEvent = mutation({
         createdBy: userId,
         eventAId: eventId,
         eventBId: resourceConflict.event.id as any,
+        resourceName,
       });
     }
     await ctx.scheduler.runAfter(0, (internal as any).agents.archiveResolvedConflictThreads, { familyId: args.familyId });
@@ -378,7 +384,19 @@ export async function deleteEventHandler(ctx: DeleteEventCtx, args: DeleteEventA
   if (!user || user.familyId !== args.familyId) {
     throw new ConvexError({ code: "FAMILY_ACCESS_DENIED", message: "Du bist kein Mitglied dieser Familie." });
   }
-  assertCanReviewDraft(user);
+
+  // Check permissions: Parent or Owner can delete any event. Creator can delete their own event.
+  const isParentOrOwner = PARENT_OR_OWNER_ROLES.has(user.role ?? "");
+  const isCreator = event.creatorId === userId;
+  if (!isParentOrOwner && !isCreator) {
+    throw new ConvexError({ code: "INSUFFICIENT_PERMISSIONS", message: "Du hast keine Berechtigung, diesen Termin zu löschen." });
+  }
+
+  // If deleting a caregiver or scheduling suggestion draft, assert isParentOrOwner
+  const isCaregiverOrSchedulingDraft = event.status === "draft" && (event.creatorId === "caregiver" || event.creatorId === "scheduling-agent");
+  if (isCaregiverOrSchedulingDraft && !isParentOrOwner) {
+    throw new ConvexError({ code: "INSUFFICIENT_PERMISSIONS", message: "Nur Eltern oder Familieninhaber dürfen Terminvorschläge verwalten." });
+  }
 
   const now = Date.now();
   await ctx.db.delete(args.eventId);
@@ -388,7 +406,7 @@ export async function deleteEventHandler(ctx: DeleteEventCtx, args: DeleteEventA
     type: "calendar_event",
     entityType: "calendarEvent",
     entityId: String(args.eventId),
-    summary: "Terminvorschlag abgelehnt",
+    summary: event.status === "draft" ? "Terminvorschlag abgelehnt" : "Kalendertermin gelöscht",
     createdAt: now,
   });
   await ctx.scheduler?.runAfter(0, (internal as any).agents.archiveResolvedConflictThreads, { familyId: args.familyId });
@@ -441,6 +459,9 @@ export async function raiseVetoHandler(ctx: VetoCtx, args: { eventId: any; reaso
   const reason = args.reason.trim();
   if (!reason) {
     throw new ConvexError({ code: "INVALID_VETO_REASON", message: "Bitte gib einen kurzen Grund für den Einspruch an." });
+  }
+  if (reason.length > 500) {
+    throw new ConvexError({ code: "INVALID_VETO_REASON", message: "Der Grund für den Einspruch darf maximal 500 Zeichen lang sein." });
   }
 
   const now = Date.now();

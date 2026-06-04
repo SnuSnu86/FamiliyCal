@@ -33,11 +33,13 @@ export function CaregiverDashboardClient({ familyName }: { familyName: string })
   const [proposalError, setProposalError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  async function loadEvents() {
-    await fetch("/api/caregiver/events")
+  async function loadEvents(date?: string) {
+    const url = date ? `/api/caregiver/events?date=${encodeURIComponent(date)}` : "/api/caregiver/events";
+    await fetch(url)
       .then(async (response) => {
         const data = await response.json();
         if (!response.ok) throw new Error(data.error ?? "Termine konnten nicht geladen werden.");
+        setError("");
         setEvents(data.events ?? []);
       })
       .catch((err) => setError(err.message))
@@ -71,16 +73,16 @@ export function CaregiverDashboardClient({ familyName }: { familyName: string })
         body: JSON.stringify({
           title: proposal.title,
           description: proposal.description,
-          startDate: new Date(`${proposal.date}T${proposal.startTime}`).toISOString(),
-          endDate: new Date(`${proposal.date}T${proposal.endTime}`).toISOString(),
-          allDay: false,
+          date: proposal.date,
+          startTime: proposal.startTime,
+          endTime: proposal.endTime,
         }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "Terminvorschlag konnte nicht gespeichert werden.");
       setProposal(initialProposal);
       setProposalMessage("Vorschlag eingereicht.");
-      await loadEvents();
+      await loadEvents(proposal.date);
     } catch (err: any) {
       setProposalError(err.message ?? "Terminvorschlag konnte nicht gespeichert werden.");
     } finally {

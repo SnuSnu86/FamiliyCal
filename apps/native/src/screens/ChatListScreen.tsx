@@ -12,6 +12,7 @@ export default function ChatListScreen() {
   const threads = useQuery(api.chats.listThreads);
   const ensureGroupThread = useMutation(api.chats.ensureFamilyGroupThread);
   const getOrCreateDirectThread = useMutation(api.chats.getOrCreateDirectThread);
+  const getOrCreateSecureDirectThread = useMutation(api.secureChats.getOrCreateSecureDirectThread);
   const groupCreatingRef = useRef(false);
 
   useEffect(() => {
@@ -30,6 +31,7 @@ export default function ChatListScreen() {
 
   const groupThread = threads?.find((thread) => thread.type === "group");
   const directThreads = threads?.filter((thread) => thread.type === "direct") ?? [];
+  const secureDirectThreads = threads?.filter((thread) => thread.type === "secure_direct") ?? [];
 
   const openGroup = async () => {
     try {
@@ -46,6 +48,15 @@ export default function ChatListScreen() {
       if (thread?._id) router.push(`/chat/${thread._id}` as Href);
     } catch (error) {
       console.warn("Direct chat failed", error);
+    }
+  };
+
+  const openSecureDirect = async (targetUserId: string) => {
+    try {
+      const thread = await getOrCreateSecureDirectThread({ targetUserId });
+      if (thread?._id) router.push(`/chat/${thread._id}` as Href);
+    } catch (error) {
+      console.warn("Secure direct chat failed", error);
     }
   };
 
@@ -81,11 +92,18 @@ export default function ChatListScreen() {
           keyExtractor={(item) => item.clerkId}
           renderItem={({ item }) => {
             const existing = directThreads.find((thread) => thread.participantIds.includes(item.clerkId));
+            const secureExisting = secureDirectThreads.find((thread) => thread.participantIds.includes(item.clerkId));
             return (
-              <TouchableOpacity accessibilityRole="button" style={styles.card} onPress={() => openDirect(item.clerkId)}>
-                <Text style={styles.cardTitle}>{item.name ?? item.email}</Text>
-                <Text style={styles.cardMeta}>{existing?.lastMessagePreview ?? "Direktchat starten"}</Text>
-              </TouchableOpacity>
+              <View>
+                <TouchableOpacity accessibilityRole="button" style={styles.card} onPress={() => openDirect(item.clerkId)}>
+                  <Text style={styles.cardTitle}>{item.name ?? item.email}</Text>
+                  <Text style={styles.cardMeta}>{existing?.lastMessagePreview ?? "Direktchat starten"}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity accessibilityRole="button" style={[styles.card, styles.secureCard]} onPress={() => openSecureDirect(item.clerkId)}>
+                  <Text style={styles.cardTitle}>🔒 {item.name ?? item.email}</Text>
+                  <Text style={styles.cardMeta}>{secureExisting?.lastMessagePreview ?? "Sicheren Chat starten"}</Text>
+                </TouchableOpacity>
+              </View>
             );
           }}
           ListEmptyComponent={<Text style={styles.empty}>Noch keine Familienmitglieder verfügbar.</Text>}
@@ -103,6 +121,7 @@ const styles = StyleSheet.create({
   list: { paddingHorizontal: 16, paddingBottom: 16 },
   sectionTitle: { color: "#2A2720", fontSize: 16, fontWeight: "700", marginTop: 16, marginBottom: 8 },
   card: { minHeight: 64, borderRadius: 14, borderWidth: 1, borderColor: "#E2DDD5", backgroundColor: "#FBF9F5", padding: 12, justifyContent: "center", marginBottom: 10 },
+  secureCard: { borderColor: "#B9AA95", backgroundColor: "#FFFDF8" },
   cardTitle: { color: "#2A2720", fontSize: 16, fontWeight: "700" },
   cardMeta: { color: "#6F675E", marginTop: 4 },
   skeletonStack: { padding: 16 },

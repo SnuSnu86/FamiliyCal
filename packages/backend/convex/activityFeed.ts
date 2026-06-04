@@ -62,25 +62,31 @@ export async function recordActivity(
   });
 }
 
+export async function listActivityFeedHandler(
+  ctx: { auth: Auth; db: any },
+  args: { familyId: any; paginationOpts: { numItems: number; cursor: string | null } },
+) {
+  await requireFamilyMember(ctx, args.familyId);
+  const lowerBound = Date.now() - THIRTY_DAYS_MS;
+  // Convex's cursor pagination encodes the full index key (createdAt + _id), so
+  // entries that share the same createdAt are no longer dropped across page
+  // boundaries. The 30-day retention window is enforced via the index range and
+  // the page size is capped at MAX_LIMIT.
+  const numItems = Math.max(1, Math.min(MAX_LIMIT, Math.floor(args.paginationOpts.numItems || 25)));
+
+  return await ctx.db
+    .query("activityFeedEntries")
+    .withIndex("by_familyId_createdAt", (q: any) =>
+      q.eq("familyId", args.familyId).gte("createdAt", lowerBound),
+    )
+    .order("desc")
+    .paginate({ ...args.paginationOpts, numItems });
+}
+
 export const list = query({
   args: {
     familyId: v.id("families"),
     paginationOpts: paginationOptsValidator,
   },
-  handler: async (ctx, args) => {
-    await requireFamilyMember(ctx, args.familyId);
-    const lowerBound = Date.now() - THIRTY_DAYS_MS;
-    // Convex's cursor pagination encodes the full index key (createdAt + _id),
-    // so entries that share the same createdAt are no longer dropped across page
-    // boundaries. The 30-day retention window is enforced via the index range.
-    const numItems = Math.max(1, Math.min(MAX_LIMIT, Math.floor(args.paginationOpts.numItems || 25)));
-
-    return await ctx.db
-      .query("activityFeedEntries")
-      .withIndex("by_familyId_createdAt", (q) =>
-        q.eq("familyId", args.familyId).gte("createdAt", lowerBound),
-      )
-      .order("desc")
-      .paginate({ ...args.paginationOpts, numItems });
-  },
+  handler: async (ctx, args) => listActivityFeedHandler(ctx, args),
 });

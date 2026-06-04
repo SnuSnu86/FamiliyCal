@@ -131,57 +131,40 @@ export const sendChatMessagePush = internalAction({
     participantIds: v.array(v.string()),
     preview: v.string(),
   },
-  handler: async (ctx, args) => {
-    const tokens = await ctx.runQuery(internal.push.listThreadRecipientTokens, {
+  handler: async (ctx, args): Promise<{ sent: number }> => {
+    const tokens: Array<{ expoPushToken: string }> = await ctx.runQuery(internal.push.listThreadRecipientTokens, {
       familyId: args.familyId,
       senderId: args.senderId,
       participantIds: args.participantIds,
     });
 
-    if (tokens.length === 0) return { sent: 0 };
+    return dispatchPushNotifications(tokens, "Neue Chat-Nachricht", args.preview.trim(), {
+      chatThreadId: args.threadId,
+      chatMessageId: args.messageId,
+    });
+  },
+});
 
-    const cleanPreview = args.preview.trim();
-    const messages = tokens.map(({ expoPushToken }: { expoPushToken: string }) => ({
-      to: expoPushToken,
-      title: "Neue Chat-Nachricht",
-      body: cleanPreview.length > 80 ? `${cleanPreview.slice(0, 77)}…` : cleanPreview,
-      data: { chatThreadId: args.threadId, chatMessageId: args.messageId },
-    }));
+export const sendSecureChatMessagePush = internalAction({
+  args: {
+    familyId: v.id("families"),
+    senderId: v.string(),
+    threadId: v.id("chatThreads"),
+    messageId: v.id("secureChats"),
+    participantIds: v.array(v.string()),
+    preview: v.string(),
+  },
+  handler: async (ctx, args): Promise<{ sent: number }> => {
+    const tokens: Array<{ expoPushToken: string }> = await ctx.runQuery(internal.push.listThreadRecipientTokens, {
+      familyId: args.familyId,
+      senderId: args.senderId,
+      participantIds: args.participantIds,
+    });
 
-    let sent = 0;
-    for (const batch of chunk(messages, EXPO_BATCH_SIZE)) {
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      const accessToken = process.env.EXPO_ACCESS_TOKEN;
-      if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
-
-      try {
-        const response = await fetch(EXPO_PUSH_ENDPOINT, {
-          method: "POST",
-          headers,
-          body: JSON.stringify(batch),
-        });
-
-        if (!response.ok) {
-          const errorBody = await response.text().catch(() => "");
-          console.warn("Expo chat push HTTP error", { status: response.status, body: errorBody });
-          continue;
-        }
-
-        const result = (await response.json().catch(() => null)) as
-          | { data?: Array<{ status?: string; message?: string; details?: unknown }> }
-          | null;
-        const tickets = result?.data ?? [];
-        const failedTickets = tickets.filter((ticket) => ticket?.status === "error");
-        if (failedTickets.length > 0) {
-          console.warn("Expo chat push ticket errors", failedTickets);
-        }
-        sent += batch.length - failedTickets.length;
-      } catch (error) {
-        console.warn("Expo chat push dispatch failed", error);
-      }
-    }
-
-    return { sent };
+    return dispatchPushNotifications(tokens, "Neue sichere Nachricht", args.preview.trim(), {
+      chatThreadId: args.threadId,
+      secureChatMessageId: args.messageId,
+    });
   },
 });
 

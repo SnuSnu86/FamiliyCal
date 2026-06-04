@@ -2,7 +2,7 @@ import { Q } from "@nozbe/watermelondb";
 import withObservables from "@nozbe/with-observables";
 import { type Href, useRouter } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Alert, FlatList, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, useWindowDimensions, View } from "react-native";
+import { Alert, FlatList, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, useWindowDimensions, View } from "react-native";
 import { useConvex, useMutation, useQuery } from "convex/react";
 import { api } from "@packages/backend/convex/_generated/api";
 
@@ -38,7 +38,11 @@ function CalendarDashboardScreen({ events }: Props) {
   const ensureEventThread = useMutation(api.chats.ensureEventThread);
   const clearVeto = useMutation(api.calendarEvents.clearVeto);
   const requestSchedulingSuggestions = useMutation(api.agents.requestSchedulingSuggestions);
-  const todayDateStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const getLocalDateStr = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+  const [todayDateStr, setTodayDateStr] = useState(getLocalDateStr);
   const dailyDigest = useQuery(api.agents.getDailyDigest, { dateStr: todayDateStr });
   const requestDailyDigest = useMutation(api.agents.requestDailyDigest);
   const isOnline = useNetworkStatus();
@@ -54,12 +58,28 @@ function CalendarDashboardScreen({ events }: Props) {
   const [schedulingDuration, setSchedulingDuration] = useState("60");
   const [schedulingStart, setSchedulingStart] = useState(() => new Date().toISOString());
   const [schedulingEnd, setSchedulingEnd] = useState(() => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString());
+  const [isSubmittingScheduling, setIsSubmittingScheduling] = useState(false);
   const wasOnlineRef = useRef(isOnline);
   const isSyncingRef = useRef(false);
+  const requestingDigestRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (dailyDigest === null) {
-      requestDailyDigest({ dateStr: todayDateStr }).catch((error) => console.warn("Daily digest request failed", error));
+    const interval = setInterval(() => {
+      setTodayDateStr((current) => {
+        const next = getLocalDateStr();
+        return current !== next ? next : current;
+      });
+    }, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (dailyDigest === null && requestingDigestRef.current !== todayDateStr) {
+      requestingDigestRef.current = todayDateStr;
+      requestDailyDigest({ dateStr: todayDateStr }).catch((error) => {
+        console.warn("Daily digest request failed", error);
+        // Do not reset requestingDigestRef.current to null immediately to prevent infinite retry loops
+      });
     }
   }, [dailyDigest, requestDailyDigest, todayDateStr]);
 
@@ -118,7 +138,12 @@ function CalendarDashboardScreen({ events }: Props) {
         localEvent.status = "confirmed";
         localEvent.title = localEvent.title.replace(/^\[Vorschlag\]\s*/, "");
       });
-      const siblingDrafts = events.filter((candidate) => candidate.id !== event.id && candidate.status === "draft" && candidate.creatorId === "scheduling-agent" && candidate.title === originalDraftTitle);
+      const siblingDrafts = events.filter((candidate) =>
+        candidate.id !== event.id &&
+        candidate.status === "draft" &&
+        candidate.creatorId === "scheduling-agent" &&
+        candidate.title === originalDraftTitle
+      );
       for (const sibling of siblingDrafts) {
         await sibling.markAsDeleted();
       }
@@ -127,6 +152,7 @@ function CalendarDashboardScreen({ events }: Props) {
   };
 
   const declineDraftEvent = (event: CalendarEvent) => {
+    const originalDraftTitle = event.title;
     Alert.alert("Vorschlag ablehnen", "Möchtest du diesen Vorschlag wirklich ablehnen?", [
       { text: "Abbrechen", style: "cancel" },
       {
@@ -135,6 +161,17 @@ function CalendarDashboardScreen({ events }: Props) {
         onPress: async () => {
           await database.write(async () => {
             await event.markAsDeleted();
+            if (event.creatorId === "scheduling-agent") {
+              const siblingDrafts = events.filter((candidate) =>
+                candidate.id !== event.id &&
+                candidate.status === "draft" &&
+                candidate.creatorId === "scheduling-agent" &&
+                candidate.title === originalDraftTitle
+              );
+              for (const sibling of siblingDrafts) {
+                await sibling.markAsDeleted();
+              }
+            }
           });
           setSelectedEvent(null);
           syncCalendarChanges();
@@ -157,6 +194,12 @@ function CalendarDashboardScreen({ events }: Props) {
 
   const canReviewDrafts = currentUser?.role === "ROLE-001" || currentUser?.role === "ROLE-002";
   const isChild = currentUser?.role === "ROLE-004";
+  const sanitizeDate = (s: string) => s.includes("Z") || s.includes("+") ? s : s + "Z";
+  const closeSchedulingModal = () => {
+    setSchedulingModalOpen(false);
+    setSchedulingTitle("");
+    setSchedulingDuration("60");
+  };
   const submitSchedulingRequest = async () => {
     const title = schedulingTitle.trim();
     const durationMinutes = Number.parseInt(schedulingDuration, 10);
@@ -164,15 +207,31 @@ function CalendarDashboardScreen({ events }: Props) {
       Alert.alert("Angaben prüfen", "Bitte gib Titel, Dauer und Wunschzeitraum korrekt ein.");
       return;
     }
-    await requestSchedulingSuggestions({
-      familyId: currentUser.familyId as any,
-      title,
-      durationMinutes,
-      preferredTimeRange: { start: schedulingStart, end: schedulingEnd },
-    });
-    setSchedulingModalOpen(false);
-    setSchedulingTitle("");
-    Alert.alert("Terminvorschläge werden generiert", "Der Scheduling Agent legt gleich drei Vorschläge als Entwürfe an.");
+    const sanitizedStart = sanitizeDate(schedulingStart.trim());
+    const sanitizedEnd = sanitizeDate(schedulingEnd.trim());
+    const startParsed = Date.parse(sanitizedStart);
+    const endParsed = Date.parse(sanitizedEnd);
+    if (Number.isNaN(startParsed) || Number.isNaN(endParsed) || startParsed >= endParsed) {
+      Alert.alert("Datum ungültig", "Bitte gib einen gültigen Start- und Endzeitpunkt im ISO-Format (z.B. YYYY-MM-DDTHH:MM:SSZ) an.");
+      return;
+    }
+    if (isSubmittingScheduling) return;
+    setIsSubmittingScheduling(true);
+    try {
+      await requestSchedulingSuggestions({
+        familyId: currentUser.familyId as any,
+        title,
+        durationMinutes,
+        preferredTimeRange: { start: sanitizedStart, end: sanitizedEnd },
+      });
+      closeSchedulingModal();
+      Alert.alert("Terminvorschläge werden generiert", "Der Scheduling Agent legt gleich drei Vorschläge als Entwürfe an.");
+    } catch (error) {
+      console.warn("Scheduling request failed", error);
+      Alert.alert("Fehler", "Vorschläge konnten nicht generiert werden.");
+    } finally {
+      setIsSubmittingScheduling(false);
+    }
   };
 
   const raiseLocalVeto = (event: CalendarEvent) => {
@@ -186,11 +245,15 @@ function CalendarDashboardScreen({ events }: Props) {
       Alert.alert("Grund fehlt", "Bitte gib einen kurzen Grund für deinen Einspruch an.");
       return;
     }
+    if (!currentUser) {
+      Alert.alert("Fehler", "Benutzerdaten werden noch geladen. Bitte versuche es gleich noch einmal.");
+      return;
+    }
     await database.write(async () => {
       await vetoDraftEvent.update((localEvent) => {
         localEvent.vetoStatus = "vetoed";
         localEvent.vetoReason = reason;
-        localEvent.vetoChildId = currentUser?.clerkId ?? (currentUser?._id ? String(currentUser._id) : undefined);
+        localEvent.vetoChildId = currentUser.clerkId ?? (currentUser._id ? String(currentUser._id) : undefined);
       });
     });
     setVetoDraftEvent(null);
@@ -203,19 +266,25 @@ function CalendarDashboardScreen({ events }: Props) {
       Alert.alert("Noch nicht synchronisiert", "Der Klärungs-Chat ist verfügbar, sobald der Termin synchronisiert ist.");
       return;
     }
-    await ensureEventThread({ calendarEventId: event.serverId as any });
-    router.push("/chats" as Href);
+    try {
+      const thread = await ensureEventThread({ calendarEventId: event.serverId as any });
+      if (thread?._id) {
+        router.push(`/chat/${thread._id}` as Href);
+      } else {
+        router.push("/chats" as Href);
+      }
+    } catch (error) {
+      console.warn("Failed to open clarification chat", error);
+      Alert.alert("Fehler", "Der Klärungs-Chat konnte nicht geöffnet werden.");
+    }
   };
 
   const clearEventVeto = async (event: CalendarEvent) => {
-    if (event.serverId) {
-      await clearVeto({ eventId: event.serverId as any });
-    }
     await database.write(async () => {
       await event.update((localEvent) => {
-        localEvent.vetoStatus = undefined;
-        localEvent.vetoReason = undefined;
-        localEvent.vetoChildId = undefined;
+        localEvent.vetoStatus = null as any;
+        localEvent.vetoReason = null as any;
+        localEvent.vetoChildId = null as any;
       });
     });
     syncCalendarChanges();
@@ -230,8 +299,16 @@ function CalendarDashboardScreen({ events }: Props) {
     onSelect: selectEvent,
   });
 
+  const openSchedulingModal = () => {
+    const now = new Date();
+    const nextWeek = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    setSchedulingStart(now.toISOString());
+    setSchedulingEnd(nextWeek.toISOString());
+    setSchedulingModalOpen(true);
+  };
+
   return (
-    <View style={styles.container}>
+    <View accessibilityLabel="Kalenderdashboard" style={styles.container}>
       <View style={styles.header}>
         <View>
           <Text style={styles.heading}>Familienkalender</Text>
@@ -240,8 +317,8 @@ function CalendarDashboardScreen({ events }: Props) {
           </Text>
         </View>
         <View style={styles.headerActions}>
-          <TouchableOpacity accessibilityRole="button" accessibilityLabel="Memos öffnen" style={styles.chatButton} onPress={() => router.push("/memos" as Href)}>
-            <Text style={styles.chatButtonText}>Memos</Text>
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel="Kalender synchronisieren" style={styles.chatButton} onPress={syncCalendarChanges}>
+            <Text style={styles.chatButtonText}>Sync</Text>
           </TouchableOpacity>
           <TouchableOpacity accessibilityRole="button" accessibilityLabel="Chats öffnen" style={styles.chatButton} onPress={() => router.push("/chats" as Href)}>
             <Text style={styles.chatButtonText}>Chats</Text>
@@ -256,7 +333,7 @@ function CalendarDashboardScreen({ events }: Props) {
       <DailyDigestCard digest={dailyDigest} loading={dailyDigest === undefined || dailyDigest === null} dateStr={todayDateStr} />
 
       {canReviewDrafts ? (
-        <TouchableOpacity accessibilityRole="button" accessibilityLabel="Terminvorschläge generieren" style={styles.schedulingButton} onPress={() => setSchedulingModalOpen(true)}>
+        <TouchableOpacity accessibilityRole="button" accessibilityLabel="Terminvorschläge generieren" style={styles.schedulingButton} onPress={openSchedulingModal}>
           <Text style={styles.schedulingButtonText}>Terminvorschläge generieren</Text>
         </TouchableOpacity>
       ) : null}
@@ -310,11 +387,11 @@ function CalendarDashboardScreen({ events }: Props) {
             <TextInput accessibilityLabel="Start des Wunschzeitraums" style={styles.vetoInput} value={schedulingStart} onChangeText={setSchedulingStart} placeholder="Start ISO" placeholderTextColor="#8A8176" />
             <TextInput accessibilityLabel="Ende des Wunschzeitraums" style={styles.vetoInput} value={schedulingEnd} onChangeText={setSchedulingEnd} placeholder="Ende ISO" placeholderTextColor="#8A8176" />
             <View style={styles.draftActions}>
-              <TouchableOpacity accessibilityRole="button" style={[styles.draftActionButton, styles.declineButton]} onPress={() => setSchedulingModalOpen(false)}>
+              <TouchableOpacity accessibilityRole="button" disabled={isSubmittingScheduling} style={[styles.draftActionButton, styles.declineButton]} onPress={closeSchedulingModal}>
                 <Text style={styles.draftActionText}>Abbrechen</Text>
               </TouchableOpacity>
-              <TouchableOpacity accessibilityRole="button" style={[styles.draftActionButton, styles.approveButton]} onPress={submitSchedulingRequest}>
-                <Text style={styles.draftActionText}>Generieren</Text>
+              <TouchableOpacity accessibilityRole="button" disabled={isSubmittingScheduling} style={[styles.draftActionButton, styles.approveButton]} onPress={submitSchedulingRequest}>
+                <Text style={styles.draftActionText}>{isSubmittingScheduling ? "Generiere..." : "Generieren"}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -539,7 +616,7 @@ const styles = StyleSheet.create({
   header: { paddingHorizontal: 16, paddingTop: 24, paddingBottom: 12, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   heading: { color: "#2A2720", fontSize: 24, fontWeight: "700" },
   headerActions: { flexDirection: "row", alignItems: "center", gap: 8 },
-  chatButton: { minHeight: 44, justifyContent: "center", borderRadius: 12, paddingHorizontal: 14, backgroundColor: "#7D9B84" },
+  chatButton: { minHeight: Platform.OS === "android" ? 48 : 44, justifyContent: "center", borderRadius: 12, paddingHorizontal: 14, backgroundColor: "#7D9B84" },
   chatButtonText: { color: "#FFFFFF", fontWeight: "700" },
   schedulingButton: { marginHorizontal: 16, marginBottom: 12, borderRadius: 12, minHeight: 48, alignItems: "center", justifyContent: "center", backgroundColor: "#5C7C8A" },
   schedulingButtonText: { color: "#FFFFFF", fontWeight: "700" },

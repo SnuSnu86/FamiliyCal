@@ -53,6 +53,27 @@ export const migrations = schemaMigrations({
             { name: "encrypted_private_key", type: "string", isOptional: true },
           ],
         }),
+        addColumns({
+          table: "calendar_events",
+          columns: [
+            { name: "is_private", type: "boolean", isOptional: true },
+          ],
+        }),
+      ],
+    },
+    {
+      toVersion: 4,
+      steps: [
+        createTable({
+          name: "key_verifications",
+          columns: [
+            { name: "server_id", type: "string", isOptional: true, isIndexed: true },
+            { name: "verifier_id", type: "string", isIndexed: true },
+            { name: "verified_user_id", type: "string", isIndexed: true },
+            { name: "public_key", type: "string" },
+            { name: "fingerprint", type: "string" },
+          ],
+        }),
       ],
     },
   ],

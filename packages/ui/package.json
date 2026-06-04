@@ -9,7 +9,11 @@
     "typecheck": "node ../../node_modules/typescript/bin/tsc --noEmit",
     "test": "pnpm run typecheck"
   },
+  "dependencies": {
+    "@packages/backend": "workspace:*"
+  },
   "peerDependencies": {
+    "convex": "^1.39.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

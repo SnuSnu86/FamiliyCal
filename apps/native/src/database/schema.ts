@@ -1,7 +1,7 @@
 import { appSchema, tableSchema } from "@nozbe/watermelondb";
 
 export const schema = appSchema({
-  version: 3,
+  version: 4,
   tables: [
     tableSchema({
       name: "users",
@@ -78,11 +78,22 @@ export const schema = appSchema({
         { name: "rrule", type: "string", isOptional: true },
         { name: "timezone_id", type: "string", isOptional: true },
         { name: "floating_time", type: "boolean" },
+        { name: "is_private", type: "boolean", isOptional: true },
         { name: "veto_status", type: "string", isOptional: true },
         { name: "veto_reason", type: "string", isOptional: true },
         { name: "veto_child_id", type: "string", isOptional: true, isIndexed: true },
         { name: "status", type: "string", isOptional: true },
         { name: "resource_id", type: "string", isOptional: true, isIndexed: true },
+      ],
+    }),
+    tableSchema({
+      name: "key_verifications",
+      columns: [
+        { name: "server_id", type: "string", isOptional: true, isIndexed: true },
+        { name: "verifier_id", type: "string", isIndexed: true },
+        { name: "verified_user_id", type: "string", isIndexed: true },
+        { name: "public_key", type: "string" },
+        { name: "fingerprint", type: "string" },
       ],
     }),
     tableSchema({

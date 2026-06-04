@@ -1,6 +1,7 @@
 import { useAuth, useUser } from "@clerk/expo";
+import { useAccountMapping } from "@packages/ui";
 import { api } from "@packages/backend/convex/_generated/api";
-import { useConvex, useMutation, useQuery } from "convex/react";
+import { useConvex, useMutation } from "convex/react";
 import * as Linking from "expo-linking";
 import { Redirect, Stack, useSegments } from "expo-router";
 import * as SecureStore from "expo-secure-store";
@@ -85,10 +86,39 @@ function MappingWrapper({ clerkId }: { clerkId?: string }) {
   const [timeoutReached, setTimeoutReached] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
   const [isProcessingInvite, setIsProcessingInvite] = useState(false);
+  const [storedInviteToken, setStoredInviteToken] = useState<string | null>(null);
+  const [inviteTokenLoaded, setInviteTokenLoaded] = useState(false);
   const acceptInvitation = useMutation(api.invitations.acceptInvitation);
   const processedTokens = useRef(new Set<string>());
   const isComponentMounted = useRef(true);
   const initialUrlChecked = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getInvitationToken().then((token) => {
+      if (!cancelled) {
+        setStoredInviteToken(token);
+        setInviteTokenLoaded(true);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [retryKey]);
+
+  const {
+    bootstrapFailed,
+    isWaitingForMapping: isWaitingForAccount,
+    mappedUser,
+    retryBootstrap,
+  } = useAccountMapping({
+    enabled: inviteTokenLoaded,
+    invitationToken: storedInviteToken,
+    retryKey,
+  });
+
+  const isWaitingForMapping =
+    isWaitingForAccount || isProcessingInvite || !inviteTokenLoaded;
 
   // Start background auto-sync for Memos, Lists, and Albums
   useEffect(() => {
@@ -99,17 +129,21 @@ function MappingWrapper({ clerkId }: { clerkId?: string }) {
     return () => unsubscribe();
   }, [clerkId, convexClient]);
 
+  // Start background auto-sync for key verifications (6-4 AC4) so the offline
+  // "Verifiziert" badge cache stays consistent with the server on reconnect.
+  useEffect(() => {
+    if (!clerkId) return;
+    const { startKeyVerificationAutoSync } = require("../../sync/keyVerificationSync");
+    const { database } = require("../../database");
+    const unsubscribe = startKeyVerificationAutoSync({ db: database, convexClient, verifierId: clerkId });
+    return () => unsubscribe();
+  }, [clerkId, convexClient]);
+
   useEffect(() => {
     return () => {
       isComponentMounted.current = false;
     };
   }, []);
-
-  const mappedUser = useQuery(
-    api.users.getUserByClerkId,
-    clerkId ? { clerkId } : "skip"
-  );
-  const isWaitingForMapping = mappedUser === null || mappedUser === undefined || isProcessingInvite;
 
   // Cleanup stale invitation tokens when user is already in a family
   useEffect(() => {
@@ -205,17 +239,20 @@ function MappingWrapper({ clerkId }: { clerkId?: string }) {
   }, [isWaitingForMapping, retryKey]);
 
   if (isWaitingForMapping) {
-    if (timeoutReached) {
+    if (timeoutReached || bootstrapFailed) {
       return (
         <View style={styles.errorContainer}>
           <Text style={styles.errorTitle}>Verbindung fehlgeschlagen</Text>
           <Text style={styles.errorText}>
-            Dein Konto konnte nicht mit FamilyCal synchronisiert werden. Bitte prüfe deine Internetverbindung.
+            {bootstrapFailed
+              ? "Clerk und Convex konnten nicht verbunden werden. Prüfe in Clerk die Convex-Integration (Sessions → aud = convex) und melde dich erneut an."
+              : "Dein Konto konnte nicht mit FamilyCal synchronisiert werden. Bitte prüfe deine Internetverbindung."}
           </Text>
           <TouchableOpacity
             style={styles.retryButton}
             onPress={() => {
               setTimeoutReached(false);
+              retryBootstrap();
               setRetryKey((prev) => prev + 1);
             }}
           >
@@ -257,7 +294,9 @@ function MappingWrapper({ clerkId }: { clerkId?: string }) {
     <View style={styles.appShell}>
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="event-editor" options={{ presentation: "modal" }} />
+        <Stack.Screen name="voice-input" options={{ presentation: "modal" }} />
         <Stack.Screen name="e2e-setup" />
+        <Stack.Screen name="key-verification" />
         <Stack.Screen name="chats" />
         <Stack.Screen name="chat/[threadId]" />
       </Stack>

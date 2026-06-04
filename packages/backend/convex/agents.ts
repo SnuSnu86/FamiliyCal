@@ -12,7 +12,14 @@ const ARCHIVE_AFTER_MS = 48 * 60 * 60 * 1000;
 const CHILD_ROLE = "ROLE-004";
 const CHILD_INCLUDE_KEYWORDS = ["schule", "training", "zahnarzt kind", "nachhilfe", "fußball", "fussball", "kind", "kita", "hort"];
 const PARENT_ONLY_KEYWORDS = ["arbeit", "job", "meeting", "finanzen", "büro", "buero", "date night", "mama sport", "papa sport", "elternabend"];
-const INJECTION_PATTERNS = [/ignore (previous )?instructions/i, /system[- ]?prompt/i, /\bROLE-/i, /<\/?script/i, /developer message/i, /systemsteuer/i];
+const INJECTION_PATTERNS = [
+  /ignore (previous )?instructions/i,
+  /\bsystem[- ]?prompt\b/i,
+  /\bROLE-\d{3}\b/i,
+  /<\/?script/i,
+  /developer message/i,
+  /\bignore_instructions\b/i
+];
 
 function agentError(code: string, message: string) {
   return new ConvexError({ code, message });
@@ -22,9 +29,9 @@ export function sanitizeDigestText(value?: string | null) {
   return (value ?? "").replace(/[<>\\\r\n\t\u0000-\u001F\u007F]/g, " ").replace(/\s+/g, " ").trim();
 }
 
-export function isEventRelevantForDigest(event: any, userRole: string) {
+export function isEventRelevantForDigest(event: any, userRole: string, userId: string) {
   if (userRole !== CHILD_ROLE) return true;
-  if (event.isPrivate === true || event.private === true) return false;
+  if ((event.isPrivate === true || event.private === true) && event.creatorId !== userId) return false;
   const text = `${event.title ?? ""} ${event.description ?? ""}`.toLowerCase();
   const hasChildSignal = CHILD_INCLUDE_KEYWORDS.some((keyword) => text.includes(keyword));
   const hasParentOnlySignal = PARENT_ONLY_KEYWORDS.some((keyword) => text.includes(keyword));
@@ -40,18 +47,29 @@ export function validateDigestSummary(summary: string) {
 }
 
 export function parseDigestJson(jsonText: string) {
-  const parsed = JSON.parse(jsonText) as { summary?: unknown };
+  let parsed: any;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch (err) {
+    throw agentError("DIGEST_PARSE_INVALID", "Die LLM-Antwort konnte nicht als JSON gelesen werden.");
+  }
   if (!parsed || typeof parsed.summary !== "string") throw agentError("DIGEST_PARSE_INVALID", "Digest JSON entspricht nicht dem erwarteten Schema.");
   return { summary: validateDigestSummary(parsed.summary) };
 }
 
 export function validateSchedulingSlots(jsonText: string, preferredTimeRange: { start: string; end: string }, durationMinutes: number) {
-  const parsed = JSON.parse(jsonText) as { slots?: unknown };
-  if (!parsed || !Array.isArray(parsed.slots) || parsed.slots.length !== 3) {
-    throw agentError("SCHEDULING_PARSE_INVALID", "Scheduling JSON entspricht nicht dem erwarteten Schema.");
+  let parsed: any;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch (err) {
+    throw agentError("SCHEDULING_PARSE_INVALID", "Die LLM-Antwort konnte nicht als JSON gelesen werden.");
   }
-  const rangeStart = Date.parse(preferredTimeRange.start);
-  const rangeEnd = Date.parse(preferredTimeRange.end);
+  if (!parsed || !Array.isArray(parsed.slots) || parsed.slots.length === 0) {
+    throw agentError("SCHEDULING_PARSE_INVALID", "Keine Zeitslots vorgeschlagen.");
+  }
+  const ensureUtc = (d: string) => d.includes("Z") || d.includes("+") || d.includes("-") ? d : `${d}Z`;
+  const rangeStart = Date.parse(ensureUtc(preferredTimeRange.start));
+  const rangeEnd = Date.parse(ensureUtc(preferredTimeRange.end));
   if (Number.isNaN(rangeStart) || Number.isNaN(rangeEnd) || rangeEnd <= rangeStart) {
     throw agentError("SCHEDULING_RANGE_INVALID", "Der Wunschzeitraum ist ungültig.");
   }
@@ -59,8 +77,8 @@ export function validateSchedulingSlots(jsonText: string, preferredTimeRange: { 
     if (!slot || typeof slot.startDate !== "string" || typeof slot.endDate !== "string") {
       throw agentError("SCHEDULING_SLOT_INVALID", "Ein vorgeschlagener Zeitslot ist ungültig.");
     }
-    const start = Date.parse(slot.startDate);
-    const end = Date.parse(slot.endDate);
+    const start = Date.parse(ensureUtc(slot.startDate));
+    const end = Date.parse(ensureUtc(slot.endDate));
     if (Number.isNaN(start) || Number.isNaN(end) || end <= start || start < rangeStart || end > rangeEnd) {
       throw agentError("SCHEDULING_SLOT_INVALID", "Ein vorgeschlagener Zeitslot liegt außerhalb des Wunschzeitraums.");
     }
@@ -73,6 +91,9 @@ export function validateSchedulingSlots(jsonText: string, preferredTimeRange: { 
 
 function extractResponseText(response: any): string {
   if (typeof response?.output_text === "string") return response.output_text;
+  if (typeof response?.choices?.[0]?.message?.content === "string") {
+    return response.choices[0].message.content;
+  }
   const text = response?.output?.flatMap((item: any) => item.content ?? []).find((content: any) => content.type === "output_text" || content.type === "text")?.text;
   if (typeof text === "string") return text;
   throw agentError("DIGEST_PARSE_FAILED", "Die Digest-Antwort konnte nicht gelesen werden.");
@@ -114,6 +135,27 @@ export function conflictCooldownMs(now: number, eventA: { startDate: string }, e
   return starts.some((start) => start - now <= URGENT_WINDOW_MS) ? URGENT_COOLDOWN_MS : FUTURE_COOLDOWN_MS;
 }
 
+export function sanitizePrivateEventForAgent(event: any): any {
+  if (!event?.isPrivate) return event;
+  return {
+    _id: event._id,
+    familyId: event.familyId,
+    creatorId: event.creatorId,
+    clientId: event.clientId,
+    startDate: event.startDate,
+    endDate: event.endDate,
+    allDay: event.allDay,
+    rrule: event.rrule,
+    timezoneId: event.timezoneId,
+    floatingTime: event.floatingTime,
+    resourceId: event.resourceId,
+    status: event.status,
+    updatedAt: event.updatedAt,
+    createdAt: event.createdAt,
+    title: "Privat",
+  };
+}
+
 export function eventsStillConflict(eventA: any, eventB: any) {
   if (!eventA || !eventB || !eventA.resourceId || eventA.resourceId !== eventB.resourceId) return false;
   const result = findResourceConflict({
@@ -151,7 +193,7 @@ export const triggerConflictAgent = internalMutation({
     const threadId = await ctx.db.insert("chatThreads", {
       familyId: args.familyId,
       type: "conflict",
-      title: `Konflikt: ${eventA.title} vs ${eventB.title}`,
+      title: `Konflikt: ${sanitizePrivateEventForAgent(eventA).title} vs ${sanitizePrivateEventForAgent(eventB).title}`,
       participantIds: parentIds,
       conflictingEventIds: [args.eventAId, args.eventBId],
       status: "active",
@@ -175,8 +217,8 @@ export const triggerConflictAgent = internalMutation({
       threadId,
       eventAId: args.eventAId,
       eventBId: args.eventBId,
-      title: eventA.title,
-      conflictingTitle: eventB.title,
+      title: sanitizePrivateEventForAgent(eventA).title,
+      conflictingTitle: sanitizePrivateEventForAgent(eventB).title,
       resourceName: args.resourceName,
     });
 
@@ -277,7 +319,8 @@ export const getEventsForDigest = internalQuery({
     const events = await ctx.db.query("calendarEvents").withIndex("by_familyId", (q: any) => q.eq("familyId", args.familyId)).collect();
     return events
       .filter((event: any) => event.startDate >= args.startOfDay && event.startDate <= args.endOfDay)
-      .filter((event: any) => isEventRelevantForDigest(event, args.userRole));
+      .filter((event: any) => isEventRelevantForDigest(event, args.userRole))
+      .map((event: any) => sanitizePrivateEventForAgent(event));
   },
 });
 
@@ -339,6 +382,7 @@ export const getDigestExportData = query({
     const events = (await ctx.db.query("calendarEvents").withIndex("by_familyId", (q: any) => q.eq("familyId", user.familyId)).collect())
       .filter((event: any) => event.startDate >= startOfDay && event.startDate <= endOfDay)
       .filter((event: any) => isEventRelevantForDigest(event, user.role))
+      .map((event: any) => sanitizePrivateEventForAgent(event))
       .sort((a: any, b: any) => a.startDate.localeCompare(b.startDate));
     return { user, family, digest, events };
   },
@@ -362,6 +406,7 @@ export const listDigestEventsForUser = query({
     return events
       .filter((event: any) => event.startDate >= startOfDay && event.startDate <= endOfDay)
       .filter((event: any) => isEventRelevantForDigest(event, user.role))
+      .map((event: any) => sanitizePrivateEventForAgent(event))
       .sort((a: any, b: any) => a.startDate.localeCompare(b.startDate));
   },
 });
@@ -466,6 +511,10 @@ export const getConflictResolutionState = internalQuery({
   },
   handler: async (ctx, args) => {
     const [thread, eventA, eventB] = await Promise.all([ctx.db.get(args.threadId), ctx.db.get(args.eventAId), ctx.db.get(args.eventBId)]);
-    return { active: thread?.type === "conflict" && thread.status !== "archived" && thread.familyId === args.familyId, eventA, eventB };
+    return {
+      active: thread?.type === "conflict" && thread.status !== "archived" && thread.familyId === args.familyId,
+      eventA: sanitizePrivateEventForAgent(eventA),
+      eventB: sanitizePrivateEventForAgent(eventB),
+    };
   },
 });
