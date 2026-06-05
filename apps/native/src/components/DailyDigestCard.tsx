@@ -1,6 +1,7 @@
-import { useAuth } from "@clerk/expo";
+import { useMutation } from "convex/react";
 import React from "react";
 import { Alert, Linking, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { api } from "@packages/backend/convex/_generated/api";
 
 type Props = {
   digest?: { body?: string } | null;
@@ -21,15 +22,15 @@ export function SkeletonDailyDigestCard() {
 }
 
 export function DailyDigestCard({ digest, loading, dateStr = new Date().toISOString().slice(0, 10) }: Props) {
-  const { getToken } = useAuth();
+  const createDownloadToken = useMutation(api.agents.createDownloadToken);
 
   const openPdf = async () => {
     try {
       const webUrl = process.env.EXPO_PUBLIC_WEB_URL;
       if (!webUrl) throw new Error("EXPO_PUBLIC_WEB_URL ist nicht gesetzt.");
-      const token = await getToken();
-      if (!token) throw new Error("Kein gültiges Session-Token verfügbar.");
-      const pdfUrl = `${webUrl.replace(/\/$/, "")}/api/digest/pdf?date=${encodeURIComponent(dateStr)}&token=${encodeURIComponent(token)}`;
+      const ticket = await createDownloadToken({ dateStr });
+      if (!ticket) throw new Error("Kein gültiges Ticket verfügbar.");
+      const pdfUrl = `${webUrl.replace(/\/$/, "")}/api/digest/pdf?date=${encodeURIComponent(dateStr)}&ticket=${encodeURIComponent(ticket)}`;
       await Linking.openURL(pdfUrl);
     } catch (error: any) {
       Alert.alert("PDF nicht verfügbar", error?.message ?? "Die Druckansicht konnte nicht geöffnet werden.");
@@ -72,13 +73,13 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#DDE8D8",
+    backgroundColor: "rgba(125, 155, 132, 0.15)",
   },
   icon: { fontSize: 22 },
   content: { flex: 1 },
   title: { color: "#2A2720", fontSize: 16, fontWeight: "700", marginBottom: 4 },
-  body: { color: "#5F574D", lineHeight: 20 },
-  pdfButton: { alignSelf: "flex-start", minHeight: 44, marginTop: 12, borderRadius: 10, borderWidth: 1, borderColor: "#2A2720", paddingHorizontal: 12, justifyContent: "center", backgroundColor: "#FFFFFF" },
+  body: { color: "#706B60", lineHeight: 20 },
+  pdfButton: { alignSelf: "flex-start", minHeight: 44, marginTop: 12, borderRadius: 12, borderWidth: 1, borderColor: "#2A2720", paddingHorizontal: 12, justifyContent: "center", backgroundColor: "#FFFFFF" },
   pdfButtonText: { color: "#2A2720", fontWeight: "700" },
   skeletonContent: { flex: 1, gap: 10 },
   skeletonLine: { height: 14, width: "70%", borderRadius: 7, backgroundColor: "#E2DDD5" },

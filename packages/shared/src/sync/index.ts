@@ -293,7 +293,7 @@ export function toSnakeCase<T = unknown>(obj: T): T {
 export function buildCalendarEventSyncPayload(event: CalendarEventLike): LocalCalendarEventPayload {
   const camelEvent = toCamelCase<Record<string, unknown>>(event as Record<string, unknown>);
   const payload: LocalCalendarEventPayload = {
-    clientId: event.id,
+    clientId: typeof camelEvent.clientId === "string" && camelEvent.clientId.length > 0 ? camelEvent.clientId : event.id,
     locallyChangedFields: deriveLocallyChangedFields(event),
   };
 

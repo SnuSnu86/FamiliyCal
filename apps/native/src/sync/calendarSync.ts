@@ -5,6 +5,7 @@ import type { CalendarEvent } from "../database/models/CalendarEvent";
 import type { VirtualMember } from "../database/models/VirtualMember";
 
 type CalendarDatabase = {
+  adapter?: { getDeletedRecords?: (table: string) => Promise<Array<Record<string, unknown>>> };
   collections: { get: (table: string) => { find?: (id: string) => Promise<VirtualMember>; query: (...conditions: unknown[]) => { fetch: () => Promise<CalendarEvent[]> }; deletedRecords?: Array<CalendarEvent & { destroyPermanently: () => Promise<void> }> } };
   write: (writer: () => Promise<void>) => Promise<void>;
 };
@@ -33,10 +34,19 @@ export async function syncPendingCalendarEvents({
   const result: CalendarSyncResult = { synced: [], errors: [] };
 
   try {
-    const deleted = collection.deletedRecords || [];
+    const adapterDeleted = db.adapter?.getDeletedRecords ? await db.adapter.getDeletedRecords("calendar_events") : [];
+    const deleted = [
+      ...(collection.deletedRecords || []),
+      ...adapterDeleted.map((record) => ({
+        id: String(record.id ?? record.clientId ?? record.client_id ?? "deleted-calendar-event"),
+        serverId: (record.serverId as string | undefined) ?? (record.server_id as string | undefined),
+        familyId: (record.familyId as string | undefined) ?? (record.family_id as string | undefined),
+        destroyPermanently: async () => undefined,
+      } as CalendarEvent & { destroyPermanently: () => Promise<void> })),
+    ];
     for (const record of deleted) {
       try {
-        if (record.serverId) {
+        if (record.serverId && record.familyId) {
           await convexClient.mutation(api.calendarEvents.deleteEvent, { eventId: record.serverId, familyId: record.familyId });
         }
         await record.destroyPermanently();
@@ -51,7 +61,7 @@ export async function syncPendingCalendarEvents({
   }
 
   const events = await collection
-    .query(Q.or(Q.where("server_id", Q.eq(null)), Q.where("_status", Q.eq("updated"))))
+    .query(Q.or(Q.where("server_id", Q.eq(null)), Q.where("_status", Q.eq("created")), Q.where("_status", Q.eq("updated"))))
     .fetch();
 
   for (const event of events) {
@@ -108,6 +118,7 @@ async function resolveResourceServerId(
 function assignCalendarEventFields(localEvent: CalendarEvent, record: Record<string, unknown>): void {
   const assignableFields: Array<keyof CalendarEvent & string> = [
     "familyId",
+    "clientId",
     "creatorId",
     "title",
     "description",

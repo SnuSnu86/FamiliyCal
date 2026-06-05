@@ -12,7 +12,7 @@ import NoteItem from "./NoteItem";
 
 const Notes = () => {
   const [search, setSearch] = useState("");
-  const { isLoaded, isSignedIn } = useUser();
+  const { isLoaded, isSignedIn, user } = useUser();
   const [timeoutReached, setTimeoutReached] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
 
@@ -24,6 +24,13 @@ const Notes = () => {
   } = useAccountMapping({
     enabled: isLoaded && isSignedIn,
     retryKey,
+    profile: user
+      ? {
+          email: user.primaryEmailAddress?.emailAddress,
+          name: user.fullName,
+          imageUrl: user.imageUrl,
+        }
+      : undefined,
   });
 
   useEffect(() => {
@@ -63,7 +70,7 @@ const Notes = () => {
           <h2 className="text-xl font-semibold text-red-600 mb-2">Verbindung fehlgeschlagen</h2>
           <p className="text-sm text-[#6F675E] mb-6 max-w-md">
             {bootstrapFailed
-              ? "Clerk und Convex konnten nicht verbunden werden. Prüfe in Clerk die Convex-Integration (Sessions → aud = convex) und melde dich erneut an."
+              ? "Clerk und Convex konnten nicht verbunden werden. In Clerk: Convex-Integration aktivieren, Sessions → Claims mit aud = convex und E-Mail (email), dann erneut anmelden."
               : "Dein Konto konnte nicht mit FamilyCal synchronisiert werden. Das kann an einer Netzwerkverzögerung oder Serverproblemen liegen."}
           </p>
           <button

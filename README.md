@@ -42,8 +42,9 @@ This will log you into Convex, create or connect a project, and generate `packag
 Follow the official [Clerk + Convex integration](https://dashboard.clerk.com/apps/setup/convex).
 
 1. In the Clerk dashboard, open **Convex integration** and select **Activate Convex integration**.
-2. Confirm **Sessions → Claims** includes `aud = convex`.
-3. Add your Clerk Frontend API URL to Convex:
+2. Confirm **Sessions → Claims** includes `aud = convex` and maps the user's email (claim name `email`, shortcode `{{user.primary_email_address}}`). Without the email claim, Google/OAuth sign-in fails in the native app with „missing an email claim“.
+3. Ensure a JWT template named **`convex`** exists (created automatically by the integration wizard).
+4. Add your Clerk Frontend API URL to Convex:
 
 ```sh
 pnpm --filter @packages/backend exec convex env set CLERK_FRONTEND_API_URL https://your-instance.clerk.accounts.dev
@@ -51,7 +52,7 @@ pnpm --filter @packages/backend exec convex env set CLERK_FRONTEND_API_URL https
 
 `packages/backend/convex/auth.config.ts` reads `CLERK_FRONTEND_API_URL` (with optional legacy fallback to `CLERK_JWT_ISSUER_DOMAIN`).
 
-4. Configure the Clerk webhook for account sync on web sign-up:
+5. Configure the Clerk webhook for account sync on web sign-up:
 
 - Endpoint: `https://your-web-app/api/auth/mapping`
 - Events: `user.created`, `user.updated`, `user.deleted`

@@ -7,6 +7,7 @@ import {
   proposeEventForCaregiverHandler,
   raiseVetoHandler,
   sanitizeCaregiverEvent,
+  assertEventBelongsToFamily,
   validateDraftConfirmationReview,
   validateVetoFieldChange,
 } from "./calendarEvents";
@@ -147,6 +148,16 @@ describe("draft event review permissions", () => {
   });
 });
 
+describe("sync event family guard", () => {
+  test("rejects existing server events from another family", () => {
+    expect(() => assertEventBelongsToFamily({ familyId: "family-2" }, "family-1")).toThrow(ConvexError);
+  });
+
+  test("allows existing server events from the requested family", () => {
+    expect(assertEventBelongsToFamily({ familyId: "family-1" }, "family-1")).toBe(true);
+  });
+});
+
 describe("veto sync validation", () => {
   test("rejects editing an existing veto as another child without changing veto status", () => {
     expect(() =>
@@ -253,13 +264,15 @@ describe("deleteEventHandler", () => {
     );
   });
 
-  test("rejects deleting a confirmed event through the draft rejection mutation", async () => {
+  test("allows deleting a confirmed event and records correct activity", async () => {
+    const deleteFn = jest.fn().mockResolvedValue(undefined);
+    const insertActivity = jest.fn().mockResolvedValue("activity-1");
     const ctx = {
       auth: { getUserIdentity: jest.fn().mockResolvedValue({ subject: "owner-clerk" }) },
       db: {
         get: jest.fn().mockResolvedValue({ _id: "event-1", familyId: "family-1", status: "confirmed" }),
-        delete: jest.fn(),
-        insert: jest.fn(),
+        delete: deleteFn,
+        insert: insertActivity,
         query: jest.fn((table: string) => ({
           withIndex: jest.fn(() => ({
             first: jest.fn().mockResolvedValue(table === "users" ? { clerkId: "owner-clerk", familyId: "family-1", role: "ROLE-001" } : null),
@@ -268,9 +281,12 @@ describe("deleteEventHandler", () => {
       },
     };
 
-    await expect(deleteEventHandler(ctx as any, { eventId: "event-1" as any, familyId: "family-1" as any })).rejects.toBeInstanceOf(ConvexError);
-    expect(ctx.db.delete).not.toHaveBeenCalled();
-    expect(ctx.db.insert).not.toHaveBeenCalled();
+    await expect(deleteEventHandler(ctx as any, { eventId: "event-1" as any, familyId: "family-1" as any })).resolves.toEqual({ deleted: true, eventId: "event-1" });
+    expect(deleteFn).toHaveBeenCalledWith("event-1");
+    expect(insertActivity).toHaveBeenCalledWith(
+      "activityFeedEntries",
+      expect.objectContaining({ familyId: "family-1", summary: "Kalendertermin gelöscht" }),
+    );
   });
 });
 

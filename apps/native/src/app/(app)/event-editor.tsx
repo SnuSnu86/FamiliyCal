@@ -122,11 +122,12 @@ export default function EventEditorScreen() {
 
     try {
       let responseServerId: string | null = null;
+      const clientId = params.draftEventId ? `confirmed-${params.draftEventId}` : `manual-${Date.now()}`;
       try {
         const response = await syncCalendarEvent({
           serverId: params.draftEventId as any,
           familyId: familyId as any,
-          clientId: params.draftEventId ? `confirmed-${params.draftEventId}` : `manual-${Date.now()}`,
+          clientId,
           title,
           description: description || undefined,
           startDate: effectiveStart.toISOString(),
@@ -149,10 +150,10 @@ export default function EventEditorScreen() {
 
       await database.write(async () => {
         if (params.draftEventId) {
-          const localDrafts = await database.get<CalendarEvent>("calendar_events").query(Q.where("server_id", params.draftEventId)).fetch();
+          const localDrafts = await (database.collections.get("calendar_events") as any).query(Q.where("server_id", params.draftEventId)).fetch();
           if (localDrafts.length > 0) {
             const localEvent = localDrafts[0];
-            await localEvent.update((event) => {
+            await localEvent.update((event: CalendarEvent) => {
               event.title = title;
               event.description = description || undefined;
               event.startDate = effectiveStart.toISOString();
@@ -164,15 +165,17 @@ export default function EventEditorScreen() {
               if (responseServerId) {
                 event.serverId = responseServerId;
               }
+              event.clientId = clientId;
             });
             return;
           }
         }
 
         // Create new local event in the same transaction
-        const events = database.get<CalendarEvent>("calendar_events");
+        const events = database.collections.get("calendar_events") as any;
         await events.create((event: CalendarEvent) => {
           event.serverId = responseServerId;
+          event.clientId = clientId;
           event.familyId = familyId;
           event.creatorId = user.id;
           event.title = title;
@@ -213,7 +216,7 @@ export default function EventEditorScreen() {
         }
 
         // Delete locally from WatermelonDB in a write transaction
-        const localDrafts = await database.get<CalendarEvent>("calendar_events").query(Q.where("server_id", params.draftEventId)).fetch();
+        const localDrafts = await (database.collections.get("calendar_events") as any).query(Q.where("server_id", params.draftEventId)).fetch();
         if (localDrafts.length > 0) {
           await database.write(async () => {
             await localDrafts[0].markAsDeleted();

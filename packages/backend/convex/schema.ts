@@ -265,6 +265,13 @@ export default defineSchema({
     .index("by_userId_and_dateStr", ["userId", "dateStr"])
     .index("by_familyId_and_userId", ["familyId", "userId"]),
 
+  downloadTokens: defineTable({
+    token: v.string(),
+    userId: v.string(),
+    dateStr: v.string(),
+    expiresAt: v.number(),
+  }).index("by_token", ["token"]),
+
   pushTokens: defineTable({
     userId: v.string(),
     familyId: v.id("families"),

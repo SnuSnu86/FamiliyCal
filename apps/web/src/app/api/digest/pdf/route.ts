@@ -10,22 +10,25 @@ export const runtime = "nodejs";
 
 type VerifiedToken = { sub?: string; userId?: string };
 
-let globalConvexClient: ConvexHttpClient | null = null;
-
-function getConvexClient() {
+function createConvexClient(token: string) {
   const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
   if (!convexUrl) throw new Error("NEXT_PUBLIC_CONVEX_URL is required for digest PDF export");
-  if (!globalConvexClient) globalConvexClient = new ConvexHttpClient(convexUrl);
-  return globalConvexClient;
+  const client = new ConvexHttpClient(convexUrl);
+  client.setAuth(token);
+  return client;
 }
 
 function todayDateStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
-async function getAuthenticatedUserId(request: NextRequest) {
+async function getAuthenticatedUser(request: NextRequest) {
   const session = await auth();
-  if (session.userId) return session.userId;
+  if (session.userId) {
+    const token = await session.getToken();
+    if (!token) return null;
+    return { userId: session.userId, token };
+  }
 
   const urlToken = request.nextUrl.searchParams.get("token");
   const authHeader = request.headers.get("authorization");
@@ -33,22 +36,42 @@ async function getAuthenticatedUserId(request: NextRequest) {
   const token = urlToken || bearerToken;
   if (!token) return null;
 
-  const client = await clerkClient();
-  const verified = await (client as any).verifyToken(token, { secretKey: process.env.CLERK_SECRET_KEY }) as VerifiedToken;
-  return verified.sub ?? verified.userId ?? null;
+  try {
+    const client = await clerkClient();
+    const verified = await (client as any).verifyToken(token, { secretKey: process.env.CLERK_SECRET_KEY }) as VerifiedToken;
+    const userId = verified.sub ?? verified.userId ?? null;
+    return userId ? { userId, token } : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function GET(request: NextRequest) {
   try {
-    const userId = await getAuthenticatedUserId(request);
-    if (!userId) return NextResponse.json({ error: "Nicht autorisiert" }, { status: 401 });
+    const ticket = request.nextUrl.searchParams.get("ticket");
+    let exportData: any = null;
+    let dateStr = request.nextUrl.searchParams.get("date") || todayDateStr();
 
-    const dateStr = request.nextUrl.searchParams.get("date") || todayDateStr();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-      return NextResponse.json({ error: "Ungültiges Datum" }, { status: 400 });
+    if (ticket) {
+      const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
+      if (!convexUrl) throw new Error("NEXT_PUBLIC_CONVEX_URL is required for digest PDF export");
+      const client = new ConvexHttpClient(convexUrl);
+      exportData = await client.mutation(api.agents.verifyDownloadToken, { token: ticket });
+      if (!exportData) {
+        return NextResponse.json({ error: "Ungültiges oder abgelaufenes Ticket" }, { status: 401 });
+      }
+      dateStr = exportData.dateStr;
+    } else {
+      const authenticated = await getAuthenticatedUser(request);
+      if (!authenticated) return NextResponse.json({ error: "Nicht autorisiert" }, { status: 401 });
+
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        return NextResponse.json({ error: "Ungültiges Datum" }, { status: 400 });
+      }
+
+      exportData = await createConvexClient(authenticated.token).query((api as any).agents.getDigestExportData, { userId: authenticated.userId, dateStr });
     }
 
-    const exportData = await getConvexClient().query((api as any).agents.getDigestExportData, { userId, dateStr });
     const stream = await renderToStream(
       React.createElement(MonochromeDigestDocument, {
         dateStr,

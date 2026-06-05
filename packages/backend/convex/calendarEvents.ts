@@ -1,6 +1,6 @@
 import { findResourceConflict, mergeCalendarEventFields, type ResourceConflictEvent } from "@packages/shared";
 import { internal } from "./_generated/api";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { type Auth } from "convex/server";
 import { recordActivity } from "./activityFeed";
@@ -9,6 +9,39 @@ async function requireUserId({ auth }: { auth: Auth }) {
   const userId = (await auth.getUserIdentity())?.subject ?? null;
   if (userId) return userId;
   throw new ConvexError({ code: "AUTH_REQUIRED", message: "Bitte melde dich an, um Kalendertermine zu synchronisieren." });
+}
+
+async function requireFamilyAccess(ctx: any, familyId: any) {
+  const userId = await requireUserId(ctx);
+  const user = await ctx.db
+    .query("users")
+    .withIndex("by_clerkId", (q: any) => q.eq("clerkId", userId))
+    .first();
+  if (!user) {
+    throw new ConvexError({ code: "USER_NOT_FOUND", message: "Benutzer nicht gefunden." });
+  }
+  if (user.familyId !== familyId) {
+    throw new ConvexError({ code: "FAMILY_ACCESS_DENIED", message: "Du bist kein Mitglied dieser Familie." });
+  }
+  return { userId, user };
+}
+
+async function requireParentFamilyAccess(ctx: any, familyId: any, clerkId?: string) {
+  if (clerkId) {
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_clerkId", (q: any) => q.eq("clerkId", clerkId))
+      .first();
+    if (!user || user.familyId !== familyId) {
+      throw new ConvexError({ code: "FAMILY_ACCESS_DENIED", message: "Du bist kein Mitglied dieser Familie." });
+    }
+    assertCanReviewDraft(user);
+    return { userId: clerkId, user };
+  }
+
+  const access = await requireFamilyAccess(ctx, familyId);
+  assertCanReviewDraft(access.user);
+  return access;
 }
 
 const optionalString = v.optional(v.string());
@@ -29,36 +62,128 @@ export function validateDraftConfirmationReview(user: { role?: string | null }, 
   return confirmsDraft;
 }
 
-export function sanitizeCaregiverEvent(event: Record<string, any>) {
-  if (!event.isPrivate && !event.private && !event.floatingTime) return event;
+export function validateVetoFieldChange(
+  user: { role?: string | null; clerkId: string },
+  existing: { vetoStatus?: string; vetoReason?: string; vetoChildId?: string },
+  patch: { vetoStatus?: string; vetoReason?: string; vetoChildId?: string },
+): boolean {
+  const isParent = PARENT_OR_OWNER_ROLES.has(user.role ?? "");
+  const isChild = user.role === CHILD_ROLE;
 
+  const vetoStatusChanged = existing.vetoStatus !== patch.vetoStatus;
+  const vetoReasonChanged = existing.vetoReason !== patch.vetoReason;
+  const vetoChildIdChanged = existing.vetoChildId !== patch.vetoChildId;
+  const vetoChanged = vetoStatusChanged || vetoReasonChanged || vetoChildIdChanged;
+
+  if (!vetoChanged) {
+    return true;
+  }
+
+  if (isChild) {
+    if (existing.vetoStatus === "vetoed" && patch.vetoStatus !== "vetoed") {
+      throw new ConvexError({
+        code: "INSUFFICIENT_PERMISSIONS",
+        message: "Kinder dürfen Einsprüche nicht zurücksetzen.",
+      });
+    }
+
+    if (existing.vetoChildId && existing.vetoChildId !== user.clerkId) {
+      throw new ConvexError({
+        code: "INSUFFICIENT_PERMISSIONS",
+        message: "Du kannst den Einspruch eines anderen Kindes nicht bearbeiten.",
+      });
+    }
+
+    if (patch.vetoChildId && patch.vetoChildId !== user.clerkId) {
+      throw new ConvexError({
+        code: "INSUFFICIENT_PERMISSIONS",
+        message: "Du darfst einen Einspruch nur unter deiner eigenen ID erheben.",
+      });
+    }
+  } else if (!isParent) {
+    throw new ConvexError({
+      code: "INSUFFICIENT_PERMISSIONS",
+      message: "Keine Berechtigung, Einsprüche zu bearbeiten.",
+    });
+  }
+
+  return true;
+}
+
+export function assertEventBelongsToFamily(event: { familyId?: unknown } | null, familyId: unknown) {
+  if (event && event.familyId !== familyId) {
+    throw new ConvexError({ code: "EVENT_ACCESS_DENIED", message: "Dieser Termin gehört nicht zu deiner Familie." });
+  }
+  return true;
+}
+
+export function eventOverlapsCaregiverRange(
+  event: { startDate: string; endDate: string; rrule?: string },
+  range: { startDate: string; endDate: string },
+): boolean {
+  const eventStart = Date.parse(event.startDate);
+  const eventEnd = Date.parse(event.endDate);
+  const rangeStart = Date.parse(range.startDate);
+  const rangeEnd = Date.parse(range.endDate);
+
+  if (Number.isNaN(eventStart) || Number.isNaN(eventEnd) || Number.isNaN(rangeStart) || Number.isNaN(rangeEnd)) {
+    return false;
+  }
+
+  if (eventStart < rangeEnd && eventEnd > rangeStart) {
+    return true;
+  }
+
+  if (event.rrule && event.rrule.includes("FREQ=WEEKLY")) {
+    if (eventStart >= rangeEnd) {
+      return false;
+    }
+    const WEEK = 7 * 24 * 60 * 60 * 1000;
+    const k = Math.floor((rangeStart - eventEnd) / WEEK) + 1;
+    const occurrenceStart = eventStart + k * WEEK;
+    return occurrenceStart < rangeEnd;
+  }
+
+  return false;
+}
+
+export function sanitizeCaregiverEvent(event: Record<string, any>) {
+  const isPrivate = Boolean(event.isPrivate || event.private || event.floatingTime);
   return {
-    ...event,
-    title: "Privater Termin",
-    description: undefined,
-    rrule: undefined,
-    vetoReason: undefined,
+    _id: event._id,
+    clientId: event.clientId,
+    title: isPrivate ? "Privater Termin" : event.title,
+    description: isPrivate ? undefined : event.description,
+    startDate: event.startDate,
+    endDate: event.endDate,
+    allDay: event.allDay,
+    status: event.status,
   };
 }
 
 export function sanitizeSchedulingEvent(event: Record<string, any>) {
-  const base = {
-    ...event,
-    comments: undefined,
-    notes: undefined,
-  };
-
-  if (!event.isPrivate && !event.private) return base;
+  const isPrivate = Boolean(event.isPrivate || event.private);
+  if (!isPrivate) {
+    return {
+      ...event,
+      comments: undefined,
+      notes: undefined,
+    };
+  }
 
   return {
-    ...base,
     title: "Privater Termin",
-    description: undefined,
-    rrule: undefined,
+    startDate: event.startDate,
+    endDate: event.endDate,
+    allDay: event.allDay,
   };
 }
 
-export async function listEventsForSchedulingHandler(ctx: { db: { query: (table: string) => any } }, args: { familyId: any; startDate: string; endDate: string; resourceId?: any }) {
+export async function listEventsForSchedulingHandler(
+  ctx: { db: { query: (table: string) => any }; auth: Auth },
+  args: { familyId: any; startDate: string; endDate: string; resourceId?: any }
+) {
+  await requireFamilyAccess(ctx as any, args.familyId);
   assertValidDateRange(args.startDate, args.endDate);
   const events = await ctx.db
     .query("calendarEvents")
@@ -66,18 +191,19 @@ export async function listEventsForSchedulingHandler(ctx: { db: { query: (table:
     .collect();
 
   return events
-    .filter((event: any) => event.startDate < args.endDate && event.endDate > args.startDate)
-    .filter((event: any) => !args.resourceId || event.resourceId === args.resourceId || !event.resourceId)
+    .filter((event: any) => eventOverlapsCaregiverRange(event, { startDate: args.startDate, endDate: args.endDate }))
     .map(sanitizeSchedulingEvent);
 }
 
 export async function createDraftSuggestionsHandler(
-  ctx: { db: { insert: (table: string, value: Record<string, unknown>) => Promise<any>; get: (id: any) => Promise<any> } },
-  args: { familyId: any; requestedTitle: string; slots: Array<{ startDate: string; endDate: string }>; resourceId?: any; schedulingBatchId?: string },
+  ctx: any,
+  args: { familyId: any; requestedTitle: string; slots: Array<{ startDate: string; endDate: string }>; resourceId?: any; schedulingBatchId?: string; requestedByUserId?: string },
 ) {
+  await requireParentFamilyAccess(ctx, args.familyId, args.requestedByUserId);
   if (args.slots.length !== 3) {
     throw new ConvexError({ code: "INVALID_SCHEDULING_SLOTS", message: "Es müssen genau 3 Terminvorschläge erzeugt werden." });
   }
+  await validateDraftSuggestionSlots(ctx, args);
 
   const now = Date.now();
   const batchId = args.schedulingBatchId ?? generateCaregiverClientId().replace("caregiver-", "scheduling-");
@@ -102,6 +228,67 @@ export async function createDraftSuggestionsHandler(
     created.push({ serverId: eventId, serverRecord: await ctx.db.get(eventId) });
   }
   return { schedulingBatchId: batchId, suggestions: created };
+}
+
+async function validateDraftSuggestionSlots(
+  ctx: any,
+  args: { familyId: any; slots: Array<{ startDate: string; endDate: string }>; resourceId?: any },
+) {
+  for (const slot of args.slots) {
+    assertValidDateRange(slot.startDate, slot.endDate);
+  }
+
+  if (args.resourceId) {
+    const resource = await ctx.db.get(args.resourceId);
+    if (!resource || resource.familyId !== args.familyId) {
+      throw new ConvexError({ code: "RESOURCE_ACCESS_DENIED", message: "Die Ressource gehört nicht zu deiner Familie." });
+    }
+    if (resource.type !== "resource") {
+      throw new ConvexError({ code: "INVALID_RESOURCE", message: "Diese Auswahl ist keine buchbare Ressource." });
+    }
+  }
+
+  const events = await ctx.db
+    .query("calendarEvents")
+    .withIndex("by_familyId", (q: any) => q.eq("familyId", args.familyId))
+    .collect();
+
+  for (let i = 0; i < args.slots.length; i++) {
+    const slot = args.slots[i];
+    const candidate = {
+      familyId: args.familyId,
+      id: `scheduling-candidate-${i}`,
+      clientId: `scheduling-candidate-${i}`,
+      startDate: slot.startDate,
+      endDate: slot.endDate,
+      allDay: false,
+      resourceId: args.resourceId,
+    };
+
+    const overlappingEvent = events.find((event: any) =>
+      event.status !== "cancelled" &&
+      eventOverlapsCaregiverRange(event, { startDate: slot.startDate, endDate: slot.endDate }) &&
+      (!args.resourceId || event.resourceId === args.resourceId)
+    );
+    if (overlappingEvent) {
+      throw new ConvexError({ code: "SCHEDULING_SLOT_CONFLICT", message: "Ein vorgeschlagener Zeitslot kollidiert mit einem bestehenden Termin." });
+    }
+
+    const siblingConflict = findResourceConflict({
+      candidate: { ...candidate, resourceId: args.resourceId ?? `family-slot-${i}` },
+      existingEvents: args.slots.slice(0, i).map((existing, index) => ({
+        id: `scheduling-candidate-${index}`,
+        clientId: `scheduling-candidate-${index}`,
+        startDate: existing.startDate,
+        endDate: existing.endDate,
+        allDay: false,
+        resourceId: args.resourceId ?? `family-slot-${i}`,
+      })),
+    });
+    if (siblingConflict.conflict) {
+      throw new ConvexError({ code: "SCHEDULING_SLOT_CONFLICT", message: "Die vorgeschlagenen Zeitslots überschneiden sich." });
+    }
+  }
 }
 
 function assertValidDateRange(startDate: string, endDate: string) {
@@ -175,6 +362,7 @@ export const syncCalendarEvent = mutation({
     rrule: optionalString,
     timezoneId: optionalString,
     floatingTime: v.boolean(),
+    isPrivate: v.optional(v.boolean()),
     vetoStatus: optionalString,
     vetoReason: optionalString,
     vetoChildId: optionalString,
@@ -189,7 +377,10 @@ export const syncCalendarEvent = mutation({
       .withIndex("by_clerkId", (q) => q.eq("clerkId", userId))
       .first();
 
-    if (!user || user.familyId !== args.familyId) {
+    if (!user) {
+      throw new ConvexError({ code: "USER_NOT_FOUND", message: "Benutzer nicht gefunden." });
+    }
+    if (user.familyId !== args.familyId) {
       throw new ConvexError({ code: "FAMILY_ACCESS_DENIED", message: "Du bist kein Mitglied dieser Familie." });
     }
 
@@ -207,6 +398,7 @@ export const syncCalendarEvent = mutation({
       rrule: args.rrule,
       timezoneId: args.timezoneId,
       floatingTime: args.floatingTime,
+      isPrivate: args.isPrivate,
       vetoStatus: args.vetoStatus,
       vetoReason: args.vetoReason,
       vetoChildId: args.vetoChildId,
@@ -216,8 +408,7 @@ export const syncCalendarEvent = mutation({
     };
 
     const existingByServerId = args.serverId ? await ctx.db.get(args.serverId) : null;
-    // Scope the idempotency lookup to the caller's family so a clientId collision
-    // across families resolves to an insert instead of throwing on a foreign event.
+    assertEventBelongsToFamily(existingByServerId, args.familyId);
     const existingByClientId = await ctx.db
       .query("calendarEvents")
       .withIndex("by_clientId", (q) => q.eq("clientId", args.clientId))
@@ -225,13 +416,10 @@ export const syncCalendarEvent = mutation({
       .first();
     const existing = existingByServerId ?? existingByClientId;
 
-    if (existing && existing.familyId !== args.familyId) {
-      throw new ConvexError({ code: "EVENT_ACCESS_DENIED", message: "Dieser Termin gehört nicht zu deiner Familie." });
-    }
-
+    let resourceId = existing ? existing.resourceId : args.resourceId;
     let resourceName: string | undefined;
-    if (args.resourceId) {
-      const resource = await ctx.db.get(args.resourceId);
+    if (resourceId) {
+      const resource = await ctx.db.get(resourceId);
       if (!resource || resource.familyId !== args.familyId) {
         throw new ConvexError({ code: "RESOURCE_ACCESS_DENIED", message: "Die Ressource gehört nicht zu deiner Familie." });
       }
@@ -248,6 +436,7 @@ export const syncCalendarEvent = mutation({
         existing,
         args.locallyChangedFields ?? [],
       );
+      validateVetoFieldChange(user as any, existing, record);
       const nextStatus = record.status as string | undefined;
       const confirmsDraft = validateDraftConfirmationReview(user, previousStatus, nextStatus);
       const patch = {
@@ -264,6 +453,7 @@ export const syncCalendarEvent = mutation({
         rrule: record.rrule as string | undefined,
         timezoneId: record.timezoneId as string | undefined,
         floatingTime: Boolean(record.floatingTime),
+        isPrivate: record.isPrivate as boolean | undefined,
         vetoStatus: record.vetoStatus as string | undefined,
         vetoReason: record.vetoReason as string | undefined,
         vetoChildId: record.vetoChildId as string | undefined,
@@ -271,19 +461,22 @@ export const syncCalendarEvent = mutation({
         resourceId: record.resourceId as typeof args.resourceId,
         updatedAt: now,
       };
+      const vetoStatusChanged = existing.vetoStatus !== patch.vetoStatus;
 
       if (confirmsDraft && existing.creatorId === "scheduling-agent" && typeof existing.clientId === "string") {
         patch.title = patch.title.replace(/^\[Vorschlag\]\s*/, "");
         const batchId = existing.clientId.replace(/-\d+$/, "");
-        const siblingDrafts = await ctx.db
-          .query("calendarEvents")
-          .withIndex("by_familyId_status", (q: any) => q.eq("familyId", args.familyId).eq("status", "draft"))
-          .collect();
-        await Promise.all(
-          siblingDrafts
-            .filter((event: any) => event._id !== existing._id && event.creatorId === "scheduling-agent" && event.status === "draft" && typeof event.clientId === "string" && event.clientId.startsWith(`${batchId}-`))
-            .map((event: any) => ctx.db.delete(event._id)),
-        );
+        for (let i = 1; i <= 3; i++) {
+          const siblingClientId = `${batchId}-${i}`;
+          const sibling = await ctx.db
+            .query("calendarEvents")
+            .withIndex("by_clientId", (q: any) => q.eq("clientId", siblingClientId))
+            .filter((q: any) => q.eq(q.field("familyId"), args.familyId))
+            .first();
+          if (sibling && sibling._id !== existing._id) {
+            await ctx.db.delete(sibling._id);
+          }
+        }
       }
 
       assertValidDateRange(patch.startDate, patch.endDate);
@@ -300,6 +493,34 @@ export const syncCalendarEvent = mutation({
         summary: confirmsDraft ? "Terminvorschlag bestätigt" : "Kalendertermin aktualisiert",
         createdAt: now,
       });
+
+      if (vetoStatusChanged) {
+        if (patch.vetoStatus === "vetoed") {
+          const vetoChildUser = await ctx.db
+            .query("users")
+            .withIndex("by_clerkId", (q) => q.eq("clerkId", patch.vetoChildId ?? userId))
+            .first();
+          await recordActivity(ctx, {
+            familyId: args.familyId,
+            actorId: userId,
+            type: "event_comment",
+            entityType: "calendarEvent",
+            entityId: String(existing._id),
+            summary: `Einspruch von ${vetoChildUser?.name ?? "Kind"} erhoben`,
+            createdAt: now,
+          });
+        } else if (existing.vetoStatus === "vetoed" && !patch.vetoStatus) {
+          await recordActivity(ctx, {
+            familyId: args.familyId,
+            actorId: userId,
+            type: "event_comment",
+            entityType: "calendarEvent",
+            entityId: String(existing._id),
+            summary: "Einspruch für Termin zurückgesetzt",
+            createdAt: now,
+          });
+        }
+      }
       if (canBypassResourceConflict && resourceConflict) {
         await ctx.scheduler.runAfter(0, (internal as any).agents.triggerConflictAgent, {
           familyId: args.familyId,
@@ -314,6 +535,7 @@ export const syncCalendarEvent = mutation({
       return { serverId: existing._id, serverRecord, mergedFields };
     }
 
+    validateVetoFieldChange(user as any, {}, localRecord);
     const resourceConflict = await detectResourceConflict(ctx, { ...localRecord, id: args.clientId }, undefined);
     const canBypassResourceConflict = assertRoleCanBypassResourceConflict(user, resourceConflict);
 
@@ -330,6 +552,22 @@ export const syncCalendarEvent = mutation({
       summary: "Kalendertermin erstellt",
       createdAt: now,
     });
+
+    if (localRecord.vetoStatus === "vetoed") {
+      const vetoChildUser = await ctx.db
+        .query("users")
+        .withIndex("by_clerkId", (q) => q.eq("clerkId", localRecord.vetoChildId ?? userId))
+        .first();
+      await recordActivity(ctx, {
+        familyId: args.familyId,
+        actorId: userId,
+        type: "event_comment",
+        entityType: "calendarEvent",
+        entityId: String(eventId),
+        summary: `Einspruch von ${vetoChildUser?.name ?? "Kind"} erhoben`,
+        createdAt: now,
+      });
+    }
     const serverRecord = await ctx.db.get(eventId);
 
     await ctx.scheduler.runAfter(0, internal.push.sendCalendarEventCreatedPush, {
@@ -377,11 +615,15 @@ export async function deleteEventHandler(ctx: DeleteEventCtx, args: DeleteEventA
     .withIndex("by_clerkId", (q: any) => q.eq("clerkId", userId))
     .first();
 
+  if (!user) {
+    throw new ConvexError({ code: "USER_NOT_FOUND", message: "Benutzer nicht gefunden." });
+  }
+
   const event = await ctx.db.get(args.eventId);
   if (!event || event.familyId !== args.familyId) {
     throw new ConvexError({ code: "EVENT_ACCESS_DENIED", message: "Dieser Termin gehört nicht zu deiner Familie." });
   }
-  if (!user || user.familyId !== args.familyId) {
+  if (user.familyId !== args.familyId) {
     throw new ConvexError({ code: "FAMILY_ACCESS_DENIED", message: "Du bist kein Mitglied dieser Familie." });
   }
 
@@ -438,6 +680,10 @@ async function requireEventAndUserForVeto(ctx: VetoCtx, eventId: any) {
     .query("users")
     .withIndex("by_clerkId", (q: any) => q.eq("clerkId", userId))
     .first();
+
+  if (!user) {
+    throw new ConvexError({ code: "USER_NOT_FOUND", message: "Benutzer nicht gefunden." });
+  }
   const event = await ctx.db.get(eventId);
 
   if (!event) {
@@ -454,6 +700,9 @@ export async function raiseVetoHandler(ctx: VetoCtx, args: { eventId: any; reaso
   const { userId, user, event } = await requireEventAndUserForVeto(ctx, args.eventId);
   if (user.role !== CHILD_ROLE) {
     throw new ConvexError({ code: "INSUFFICIENT_PERMISSIONS", message: "Nur Kinder dürfen Einspruch gegen Termine erheben." });
+  }
+  if (event.vetoStatus === "vetoed" && event.vetoChildId !== userId) {
+    throw new ConvexError({ code: "INSUFFICIENT_PERMISSIONS", message: "Dieser Termin hat bereits einen Einspruch von einem anderen Kind." });
   }
 
   const reason = args.reason.trim();
@@ -496,6 +745,9 @@ export async function clearVetoHandler(ctx: VetoCtx, args: { eventId: any }) {
   const { userId, user, event } = await requireEventAndUserForVeto(ctx, args.eventId);
   if (!PARENT_OR_OWNER_ROLES.has(user.role ?? "")) {
     throw new ConvexError({ code: "INSUFFICIENT_PERMISSIONS", message: "Nur Eltern oder Familieninhaber dürfen Einsprüche klären." });
+  }
+  if (event.vetoStatus !== "vetoed") {
+    throw new ConvexError({ code: "NO_ACTIVE_VETO", message: "Kein aktiver Einspruch vorhanden." });
   }
 
   const now = Date.now();
@@ -546,9 +798,23 @@ export const createDraftSuggestions = mutation({
   handler: async (ctx, args) => createDraftSuggestionsHandler(ctx as any, args),
 });
 
+export const createDraftSuggestionsFromAgent = internalMutation({
+  args: {
+    familyId: v.id("families"),
+    requestedTitle: v.string(),
+    slots: v.array(v.object({ startDate: v.string(), endDate: v.string() })),
+    resourceId: v.optional(v.id("virtualMembers")),
+    schedulingBatchId: v.optional(v.string()),
+    requestedByUserId: v.string(),
+  },
+  handler: async (ctx, args) => createDraftSuggestionsHandler(ctx as any, args),
+});
+
 export const listEventsForCaregiver = query({
   args: {
     familyId: v.id("families"),
+    startDate: v.string(),
+    endDate: v.string(),
     secret: v.string(),
   },
   handler: async (ctx, args) => {
@@ -561,7 +827,9 @@ export const listEventsForCaregiver = query({
       .withIndex("by_familyId", (q) => q.eq("familyId", args.familyId))
       .collect();
 
-    return events.map(sanitizeCaregiverEvent);
+    return events
+      .filter((event: any) => eventOverlapsCaregiverRange(event, { startDate: args.startDate, endDate: args.endDate }))
+      .map(sanitizeCaregiverEvent);
   },
 });
 

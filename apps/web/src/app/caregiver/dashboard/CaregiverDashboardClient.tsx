@@ -76,6 +76,7 @@ export function CaregiverDashboardClient({ familyName }: { familyName: string })
           date: proposal.date,
           startTime: proposal.startTime,
           endTime: proposal.endTime,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }),
       });
       const data = await response.json();

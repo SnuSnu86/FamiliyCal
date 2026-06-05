@@ -14,18 +14,20 @@ const proposalSchema = z
     startTime: z.string().regex(/^\d{2}:\d{2}$/),
     endTime: z.string().regex(/^\d{2}:\d{2}$/),
     description: z.string().trim().optional(),
+    timezone: z.string().refine(isValidTimeZone).optional(),
   })
   .refine((value) => {
-    const start = Date.parse(`${value.date}T${value.startTime}`);
-    const end = Date.parse(`${value.date}T${value.endTime}`);
+    const start = localDateTimeToUtc(value.date, value.startTime, value.timezone ?? "Europe/Berlin").getTime();
+    const end = localDateTimeToUtc(value.date, value.endTime, value.timezone ?? "Europe/Berlin").getTime();
     return Number.isFinite(start) && Number.isFinite(end) && start < end;
   }, {
     message: "Die Startzeit muss vor der Endzeit liegen.",
     path: ["endTime"],
   })
   .transform((value) => {
-    const startDate = new Date(`${value.date}T${value.startTime}`);
-    const endDate = new Date(`${value.date}T${value.endTime}`);
+    const timezone = value.timezone ?? "Europe/Berlin";
+    const startDate = localDateTimeToUtc(value.date, value.startTime, timezone);
+    const endDate = localDateTimeToUtc(value.date, value.endTime, timezone);
     return {
       title: value.title,
       description: value.description,
@@ -34,6 +36,46 @@ const proposalSchema = z
       allDay: false,
     };
   });
+
+function isValidTimeZone(value: string) {
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function localDateTimeToUtc(date: string, time: string, timeZone: string) {
+  const [year, month, day] = date.split("-").map(Number);
+  const [hour, minute] = time.split(":").map(Number);
+  const utcGuess = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
+  const offset = timeZoneOffsetMs(new Date(utcGuess), timeZone);
+  return new Date(utcGuess - offset);
+}
+
+function timeZoneOffsetMs(date: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const asUtc = Date.UTC(
+    Number(values.year),
+    Number(values.month) - 1,
+    Number(values.day),
+    Number(values.hour),
+    Number(values.minute),
+    Number(values.second),
+  );
+  return asUtc - date.getTime();
+}
 
 function getConvexClient() {
   const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
@@ -47,6 +89,9 @@ export async function POST(request: Request) {
     const token = (await cookies()).get("caregiver_session")?.value;
     const session = token ? verifyToken(token) : null;
     if (!session) return NextResponse.json({ error: "Nicht angemeldet." }, { status: 401 });
+    if (session.role === "ROLE-006") {
+      return NextResponse.json({ error: "Diese Caregiver-Rolle darf keine Terminvorschläge erstellen." }, { status: 403 });
+    }
 
     let body: unknown;
     try {

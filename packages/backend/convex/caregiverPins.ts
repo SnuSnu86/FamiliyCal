@@ -4,6 +4,7 @@ import { mutation, query } from "./_generated/server";
 export const CAREGIVER_PIN_TTL_MS = 10 * 60 * 1000;
 export const CAREGIVER_PIN_ATTEMPT_WINDOW_MS = 10 * 60 * 1000;
 export const CAREGIVER_PIN_MAX_ATTEMPTS = 5;
+export const CAREGIVER_PIN_GLOBAL_ATTEMPT_KEY = "__global__";
 const CAREGIVER_PIN_ROLES = new Set(["ROLE-001", "ROLE-002"]);
 
 type CaregiverPinUser = {
@@ -195,8 +196,12 @@ export const verifyAndConsumePin = mutation({
       .query("caregiverPinAttempts")
       .withIndex("by_pin", (q) => q.eq("pin", args.pin))
       .first();
+    const globalAttempt = await ctx.db
+      .query("caregiverPinAttempts")
+      .withIndex("by_pin", (q) => q.eq("pin", CAREGIVER_PIN_GLOBAL_ATTEMPT_KEY))
+      .first();
 
-    if (isCaregiverPinLocked(attempt, now)) {
+    if (isCaregiverPinLocked(attempt, now) || isCaregiverPinLocked(globalAttempt, now)) {
       return { valid: false as const, error: "Zu viele Fehlversuche. Bitte warte kurz und versuche es erneut." };
     }
 
@@ -207,10 +212,16 @@ export const verifyAndConsumePin = mutation({
 
     if (!record || !isActiveCaregiverPin(record, now)) {
       const nextAttempt = nextCaregiverPinAttempt(attempt, now);
+      const nextGlobalAttempt = nextCaregiverPinAttempt(globalAttempt, now);
       if (attempt) {
         await ctx.db.patch(attempt._id, nextAttempt);
       } else {
         await ctx.db.insert("caregiverPinAttempts", { pin: args.pin, ...nextAttempt });
+      }
+      if (globalAttempt) {
+        await ctx.db.patch(globalAttempt._id, nextGlobalAttempt);
+      } else {
+        await ctx.db.insert("caregiverPinAttempts", { pin: CAREGIVER_PIN_GLOBAL_ATTEMPT_KEY, ...nextGlobalAttempt });
       }
       return validateCaregiverPinRecord(record ?? null, now);
     }
@@ -224,6 +235,7 @@ export const verifyAndConsumePin = mutation({
     if (result.valid) {
       await ctx.db.delete(record._id);
       if (attempt) await ctx.db.delete(attempt._id);
+      if (globalAttempt) await ctx.db.delete(globalAttempt._id);
     }
 
     return result;

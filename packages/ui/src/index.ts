@@ -1,2 +1,5 @@
-export { useAccountMapping } from "./useAccountMapping";
+export {
+  useAccountMapping,
+  type AccountMappingProfile,
+} from "./useAccountMapping";
 export const uiPackageReady = true;

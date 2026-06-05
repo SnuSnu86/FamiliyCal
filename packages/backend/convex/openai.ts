@@ -34,7 +34,7 @@ export const summary = internalAction({
 
     const openai = new OpenAI({ apiKey });
     const output = await openai.responses.create({
-      model: "gpt-5.4-mini",
+      model: "gpt-4o-mini",
       instructions:
         "You summarize user notes in concise plain English. Respond with summary text only.",
       input: `Summarize the following note.\n\nTitle: ${title}\n\nContent:\n${content}`,

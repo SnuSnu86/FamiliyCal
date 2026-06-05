@@ -1,6 +1,6 @@
 "use client";
 
-import { SignUp, useAuth } from "@clerk/nextjs";
+import { SignUp, useAuth, useUser } from "@clerk/nextjs";
 import { useAccountMapping } from "@packages/ui";
 import { api } from "@packages/backend/convex/_generated/api";
 import { useMutation, useQuery } from "convex/react";
@@ -11,12 +11,20 @@ export default function InvitePage() {
   const searchParams = useSearchParams();
   const token = searchParams.get("token") ?? "";
   const { isLoaded, isSignedIn } = useAuth();
+  const { user } = useUser();
   const invitation = useQuery(api.invitations.getInvitationByToken, token ? { token } : "skip");
   const acceptInvitation = useMutation(api.invitations.acceptInvitation);
 
   const { isWaitingForMapping, mappedUser } = useAccountMapping({
     enabled: isLoaded && isSignedIn,
     invitationToken: token || null,
+    profile: user
+      ? {
+          email: user.primaryEmailAddress?.emailAddress,
+          name: user.fullName,
+          imageUrl: user.imageUrl,
+        }
+      : undefined,
   });
 
   const [message, setMessage] = useState<string | null>(null);

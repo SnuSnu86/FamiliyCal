@@ -5,6 +5,7 @@ import {
   CAREGIVER_PIN_TTL_MS,
   CAREGIVER_PIN_ATTEMPT_WINDOW_MS,
   CAREGIVER_PIN_MAX_ATTEMPTS,
+  CAREGIVER_PIN_GLOBAL_ATTEMPT_KEY,
   assertCanManageCaregiverPins,
   blocksCaregiverPinCandidate,
   createCaregiverPinRecord,
@@ -169,5 +170,9 @@ describe("caregiverPins", () => {
       firstAttemptAt: 1_000 + CAREGIVER_PIN_ATTEMPT_WINDOW_MS,
       lockedUntil: undefined,
     });
+  });
+
+  test("defines a global attempt bucket for cross-PIN brute force protection", () => {
+    expect(CAREGIVER_PIN_GLOBAL_ATTEMPT_KEY).toBe("__global__");
   });
 });

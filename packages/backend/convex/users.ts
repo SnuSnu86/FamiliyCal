@@ -3,6 +3,28 @@ import { mutation, query } from "./_generated/server";
 
 const DEFAULT_ROLE = "ROLE-003";
 
+function emailFromIdentity(identity: {
+  email?: string;
+  [key: string]: unknown;
+}): string | undefined {
+  if (identity.email?.trim()) {
+    return identity.email.trim();
+  }
+
+  for (const claim of [
+    "primary_email_address",
+    "email_address",
+    "primaryEmailAddress",
+  ]) {
+    const value = identity[claim];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return undefined;
+}
+
 function assertValidClerkUser(args: { clerkId: string; email?: string }) {
   if (!args.clerkId.trim()) {
     throw new ConvexError("clerkId is required for Clerk user mapping");
@@ -108,6 +130,9 @@ export const upsertUserFromWebhook = mutation({
 export const ensureCurrentUser = mutation({
   args: {
     invitationToken: v.optional(v.string()),
+    email: v.optional(v.string()),
+    name: v.optional(v.string()),
+    imageUrl: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
@@ -115,18 +140,18 @@ export const ensureCurrentUser = mutation({
       throw new ConvexError("Authentication required");
     }
 
-    const email = identity.email;
-    if (!email?.trim()) {
+    const email = emailFromIdentity(identity) ?? args.email?.trim();
+    if (!email) {
       throw new ConvexError(
-        "Authenticated Clerk user is missing an email claim",
+        "Authenticated Clerk user is missing an email claim. In Clerk: Convex-Integration aktivieren und unter Sessions → Claims die E-Mail (email) mappen.",
       );
     }
 
     return await upsertClerkUser(ctx, {
       clerkId: identity.subject,
       email,
-      name: identity.name ?? undefined,
-      imageUrl: identity.pictureUrl ?? undefined,
+      name: identity.name ?? args.name ?? undefined,
+      imageUrl: identity.pictureUrl ?? args.imageUrl ?? undefined,
       invitationToken: args.invitationToken,
     });
   },

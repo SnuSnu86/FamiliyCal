@@ -18,16 +18,12 @@ describe("scheduling zero-knowledge filtering", () => {
         isPrivate: true,
       }),
     ).toEqual(
-      expect.objectContaining({
+      {
         title: "Privater Termin",
-        description: undefined,
-        rrule: undefined,
-        comments: undefined,
-        notes: undefined,
         startDate: "2026-06-10T08:00:00.000Z",
         endDate: "2026-06-10T09:00:00.000Z",
         allDay: false,
-      }),
+      },
     );
   });
 
@@ -38,8 +34,18 @@ describe("scheduling zero-knowledge filtering", () => {
       { _id: "private", familyId: "family-1", title: "Arzt", description: "Befund", rrule: "FREQ=DAILY", private: true, comments: ["x"], startDate: "2026-06-11T08:00:00.000Z", endDate: "2026-06-11T09:00:00.000Z", allDay: false },
     ]);
     const ctx = {
+      auth: { getUserIdentity: jest.fn().mockResolvedValue({ subject: "user-1" }) },
       db: {
-        query: jest.fn(() => ({ withIndex: jest.fn(() => ({ collect })) })),
+        query: jest.fn((table: string) => {
+          if (table === "users") {
+            return {
+              withIndex: jest.fn(() => ({
+                first: jest.fn().mockResolvedValue({ clerkId: "user-1", familyId: "family-1", role: "ROLE-002" }),
+              })),
+            };
+          }
+          return { withIndex: jest.fn(() => ({ collect })) };
+        }),
       },
     };
 
@@ -51,7 +57,7 @@ describe("scheduling zero-knowledge filtering", () => {
 
     expect(result).toHaveLength(2);
     expect(result[0]).toEqual(expect.objectContaining({ title: "Schule", description: "Aula" }));
-    expect(result[1]).toEqual(expect.objectContaining({ title: "Privater Termin", description: undefined, rrule: undefined, comments: undefined }));
+    expect(result[1]).toEqual({ title: "Privater Termin", startDate: "2026-06-11T08:00:00.000Z", endDate: "2026-06-11T09:00:00.000Z", allDay: false });
   });
 });
 
@@ -59,12 +65,23 @@ describe("scheduling draft creation", () => {
   test("creates exactly 3 draft suggestions with scheduling metadata", async () => {
     const inserted: any[] = [];
     const ctx = {
+      auth: { getUserIdentity: jest.fn().mockResolvedValue({ subject: "user-1" }) },
       db: {
         insert: jest.fn(async (_table: string, value: any) => {
           inserted.push(value);
           return `event-${inserted.length}`;
         }),
-        get: jest.fn(async (id: string) => ({ _id: id, ...inserted[Number(id.replace("event-", "")) - 1] })),
+        get: jest.fn(async (id: string) => id === "car-1" ? { _id: id, familyId: "family-1", type: "resource", name: "Auto" } : ({ _id: id, ...inserted[Number(id.replace("event-", "")) - 1] })),
+        query: jest.fn((table: string) => {
+          if (table === "users") {
+            return {
+              withIndex: jest.fn(() => ({
+                first: jest.fn().mockResolvedValue({ clerkId: "user-1", familyId: "family-1", role: "ROLE-002" }),
+              })),
+            };
+          }
+           return { withIndex: jest.fn(() => ({ collect: jest.fn().mockResolvedValue([]) })) };
+        }),
       },
     };
 
@@ -72,6 +89,7 @@ describe("scheduling draft creation", () => {
       familyId: "family-1" as any,
       requestedTitle: "Zoo",
       resourceId: "car-1" as any,
+      requestedByUserId: "user-1",
       schedulingBatchId: "scheduling-batch",
       slots: [
         { startDate: "2026-06-10T08:00:00.000Z", endDate: "2026-06-10T09:00:00.000Z" },
@@ -86,11 +104,28 @@ describe("scheduling draft creation", () => {
   });
 
   test("rejects any LLM result that does not contain exactly 3 slots", async () => {
-    const ctx = { db: { insert: jest.fn(), get: jest.fn() } };
+    const ctx = {
+      auth: { getUserIdentity: jest.fn().mockResolvedValue({ subject: "user-1" }) },
+      db: {
+        insert: jest.fn(),
+        get: jest.fn(),
+        query: jest.fn((table: string) => {
+          if (table === "users") {
+            return {
+              withIndex: jest.fn(() => ({
+                first: jest.fn().mockResolvedValue({ clerkId: "user-1", familyId: "family-1", role: "ROLE-002" }),
+              })),
+            };
+          }
+          return { withIndex: jest.fn(() => ({ collect: jest.fn().mockResolvedValue([]) })) };
+        }),
+      },
+    };
     await expect(
       createDraftSuggestionsHandler(ctx as any, {
         familyId: "family-1" as any,
         requestedTitle: "Zoo",
+        requestedByUserId: "user-1",
         slots: [{ startDate: "2026-06-10T08:00:00.000Z", endDate: "2026-06-10T09:00:00.000Z" }],
       }),
     ).rejects.toBeInstanceOf(ConvexError);
@@ -116,5 +151,16 @@ describe("scheduling agent authorization and response validation", () => {
         60,
       ),
     ).toHaveLength(3);
+  });
+
+  test("rejects slots that overlap existing events", () => {
+    expect(() =>
+      validateSchedulingSlots(
+        JSON.stringify({ slots: [{ startDate: "2026-06-10T08:00:00.000Z", endDate: "2026-06-10T09:00:00.000Z" }, { startDate: "2026-06-10T10:00:00.000Z", endDate: "2026-06-10T11:00:00.000Z" }, { startDate: "2026-06-10T12:00:00.000Z", endDate: "2026-06-10T13:00:00.000Z" }] }),
+        { start: "2026-06-10T00:00:00.000Z", end: "2026-06-11T00:00:00.000Z" },
+        60,
+        [{ startDate: "2026-06-10T08:30:00.000Z", endDate: "2026-06-10T09:30:00.000Z" }],
+      )
+    ).toThrow(ConvexError);
   });
 });

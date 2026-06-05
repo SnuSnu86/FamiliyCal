@@ -2,16 +2,27 @@ import { api } from "@packages/backend/convex/_generated/api";
 import { useConvexAuth, useMutation, useQuery } from "convex/react";
 import { useCallback, useEffect, useState } from "react";
 
+export type AccountMappingProfile = {
+  email?: string | null;
+  name?: string | null;
+  imageUrl?: string | null;
+};
+
 export function useAccountMapping(options?: {
   invitationToken?: string | null;
   enabled?: boolean;
   retryKey?: number;
+  profile?: AccountMappingProfile;
 }) {
   const enabled = options?.enabled ?? true;
   const retryKey = options?.retryKey ?? 0;
   const invitationToken = options?.invitationToken?.trim()
     ? options.invitationToken.trim()
     : undefined;
+
+  const profileEmail = options?.profile?.email?.trim() || undefined;
+  const profileName = options?.profile?.name?.trim() || undefined;
+  const profileImageUrl = options?.profile?.imageUrl?.trim() || undefined;
 
   const { isLoading: isConvexAuthLoading, isAuthenticated } = useConvexAuth();
   const canQuery = enabled && isAuthenticated;
@@ -41,7 +52,12 @@ export function useAccountMapping(options?: {
     let cancelled = false;
     setIsBootstrapping(true);
 
-    ensureCurrentUser({ invitationToken })
+    ensureCurrentUser({
+      invitationToken,
+      ...(profileEmail ? { email: profileEmail } : {}),
+      ...(profileName ? { name: profileName } : {}),
+      ...(profileImageUrl ? { imageUrl: profileImageUrl } : {}),
+    })
       .catch(() => {
         if (!cancelled) {
           setBootstrapFailed(true);
@@ -63,6 +79,9 @@ export function useAccountMapping(options?: {
     invitationToken,
     isBootstrapping,
     mappedUser,
+    profileEmail,
+    profileImageUrl,
+    profileName,
     retryKey,
   ]);
 

@@ -78,10 +78,16 @@ export default function AppLayout() {
 
   if (!isSignedIn) return <Redirect href="/sign-in" />;
 
-  return <MappingWrapper clerkId={user?.id} />;
+  return <MappingWrapper clerkId={user?.id} user={user!} />;
 }
 
-function MappingWrapper({ clerkId }: { clerkId?: string }) {
+type MappingWrapperProps = {
+  clerkId?: string;
+  user: NonNullable<ReturnType<typeof useUser>["user"]>;
+};
+
+function MappingWrapper({ clerkId, user }: MappingWrapperProps) {
+  const segments = useSegments();
   const convexClient = useConvex();
   const [timeoutReached, setTimeoutReached] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
@@ -115,6 +121,13 @@ function MappingWrapper({ clerkId }: { clerkId?: string }) {
     enabled: inviteTokenLoaded,
     invitationToken: storedInviteToken,
     retryKey,
+    profile: user
+      ? {
+          email: user.primaryEmailAddress?.emailAddress,
+          name: user.fullName,
+          imageUrl: user.imageUrl,
+        }
+      : undefined,
   });
 
   const isWaitingForMapping =
@@ -238,6 +251,8 @@ function MappingWrapper({ clerkId }: { clerkId?: string }) {
     return () => clearTimeout(timer);
   }, [isWaitingForMapping, retryKey]);
 
+  const isOnboarding = (segments as readonly string[]).includes("create-family");
+
   if (isWaitingForMapping) {
     if (timeoutReached || bootstrapFailed) {
       return (
@@ -245,8 +260,8 @@ function MappingWrapper({ clerkId }: { clerkId?: string }) {
           <Text style={styles.errorTitle}>Verbindung fehlgeschlagen</Text>
           <Text style={styles.errorText}>
             {bootstrapFailed
-              ? "Clerk und Convex konnten nicht verbunden werden. Prüfe in Clerk die Convex-Integration (Sessions → aud = convex) und melde dich erneut an."
-              : "Dein Konto konnte nicht mit FamilyCal synchronisiert werden. Bitte prüfe deine Internetverbindung."}
+              ? "Clerk und Convex konnten nicht verbunden werden. In Clerk: Convex-Integration aktivieren, Sessions → Claims mit aud = convex und E-Mail (email), dann erneut anmelden."
+              : "Dein Konto konnte nicht mit FamilyCal synchronisiert werden. Bitte prüfe deine Internetverbindung und melde dich erneut an."}
           </Text>
           <TouchableOpacity
             style={styles.retryButton}
@@ -278,9 +293,6 @@ function MappingWrapper({ clerkId }: { clerkId?: string }) {
       </View>
     );
   }
-
-  const segments = useSegments();
-  const isOnboarding = (segments as readonly string[]).includes("create-family");
 
   if (mappedUser && !mappedUser.familyId) {
     if (!isOnboarding) {

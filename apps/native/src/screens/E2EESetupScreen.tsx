@@ -29,16 +29,11 @@ function evaluatePassphrase(passphrase: string): Rule[] {
 }
 
 async function storePrivateKeyJwk(privateKey: CryptoKey) {
+  if (Platform.OS === "web") {
+    throw new Error("E2EE-Setup ist im Web deaktiviert, weil private Schlüssel dort nicht sicher lokal gespeichert werden können.");
+  }
   const jwk = await crypto.subtle.exportKey("jwk", privateKey);
   const serialized = JSON.stringify(jwk);
-  if (Platform.OS === "web") {
-    try {
-      sessionStorage.setItem(LOCAL_PRIVATE_KEY_KEY, serialized);
-    } catch {
-      localStorage.setItem(LOCAL_PRIVATE_KEY_KEY, serialized);
-    }
-    return;
-  }
   await SecureStore.setItemAsync(LOCAL_PRIVATE_KEY_KEY, serialized, {
     keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
   });

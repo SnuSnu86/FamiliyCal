@@ -76,5 +76,16 @@ export const migrations = schemaMigrations({
         }),
       ],
     },
+    {
+      toVersion: 5,
+      steps: [
+        addColumns({
+          table: "calendar_events",
+          columns: [
+            { name: "client_id", type: "string", isOptional: true, isIndexed: true },
+          ],
+        }),
+      ],
+    },
   ],
 });

@@ -1,7 +1,7 @@
 import { Q } from "@nozbe/watermelondb";
 import withObservables from "@nozbe/with-observables";
 import { type Href, useRouter } from "expo-router";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, FlatList, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, useWindowDimensions, View } from "react-native";
 import { useConvex, useMutation, useQuery } from "convex/react";
 import { api } from "@packages/backend/convex/_generated/api";
@@ -37,14 +37,16 @@ function CalendarDashboardScreen({ events }: Props) {
   const currentUser = useQuery(api.users.getCurrentUser);
   const ensureEventThread = useMutation(api.chats.ensureEventThread);
   const clearVeto = useMutation(api.calendarEvents.clearVeto);
+  const deleteEvent = useMutation(api.calendarEvents.deleteEvent);
   const requestSchedulingSuggestions = useMutation(api.agents.requestSchedulingSuggestions);
-  const getLocalDateStr = () => {
+  const getLocalDateStr = useCallback(() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  };
+  }, []);
   const [todayDateStr, setTodayDateStr] = useState(getLocalDateStr);
   const dailyDigest = useQuery(api.agents.getDailyDigest, { dateStr: todayDateStr });
   const requestDailyDigest = useMutation(api.agents.requestDailyDigest);
+  const virtualMembers = useQuery(api.virtualMembers.listByFamily, currentUser?.familyId ? { familyId: currentUser.familyId as any } : "skip");
   const isOnline = useNetworkStatus();
   const { width } = useWindowDimensions();
   const isTablet = width >= 768;
@@ -58,6 +60,7 @@ function CalendarDashboardScreen({ events }: Props) {
   const [schedulingDuration, setSchedulingDuration] = useState("60");
   const [schedulingStart, setSchedulingStart] = useState(() => new Date().toISOString());
   const [schedulingEnd, setSchedulingEnd] = useState(() => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString());
+  const [schedulingResourceId, setSchedulingResourceId] = useState<string | null>(null);
   const [isSubmittingScheduling, setIsSubmittingScheduling] = useState(false);
   const wasOnlineRef = useRef(isOnline);
   const isSyncingRef = useRef(false);
@@ -71,14 +74,18 @@ function CalendarDashboardScreen({ events }: Props) {
       });
     }, 60000);
     return () => clearInterval(interval);
-  }, []);
+  }, [getLocalDateStr]);
 
   useEffect(() => {
     if (dailyDigest === null && requestingDigestRef.current !== todayDateStr) {
       requestingDigestRef.current = todayDateStr;
       requestDailyDigest({ dateStr: todayDateStr }).catch((error) => {
         console.warn("Daily digest request failed", error);
-        // Do not reset requestingDigestRef.current to null immediately to prevent infinite retry loops
+        setTimeout(() => {
+          if (requestingDigestRef.current === todayDateStr) {
+            requestingDigestRef.current = null;
+          }
+        }, 15000);
       });
     }
   }, [dailyDigest, requestDailyDigest, todayDateStr]);
@@ -86,6 +93,10 @@ function CalendarDashboardScreen({ events }: Props) {
   useEffect(() => {
     const cameOnline = !wasOnlineRef.current && isOnline;
     wasOnlineRef.current = isOnline;
+
+    if (cameOnline) {
+      requestingDigestRef.current = null;
+    }
 
     if (!cameOnline || isSyncingRef.current) return;
 
@@ -132,46 +143,43 @@ function CalendarDashboardScreen({ events }: Props) {
   };
 
   const approveDraftEvent = async (event: CalendarEvent) => {
-    const originalDraftTitle = event.title;
     await database.write(async () => {
       await event.update((localEvent) => {
         localEvent.status = "confirmed";
         localEvent.title = localEvent.title.replace(/^\[Vorschlag\]\s*/, "");
       });
-      const siblingDrafts = events.filter((candidate) =>
-        candidate.id !== event.id &&
-        candidate.status === "draft" &&
-        candidate.creatorId === "scheduling-agent" &&
-        candidate.title === originalDraftTitle
-      );
-      for (const sibling of siblingDrafts) {
-        await sibling.markAsDeleted();
+      if (event.creatorId === "scheduling-agent" && event.clientId) {
+        const batchId = event.clientId.replace(/-\d+$/, "");
+        const siblingDrafts = events.filter((candidate) =>
+          candidate.id !== event.id &&
+          candidate.status === "draft" &&
+          candidate.creatorId === "scheduling-agent" &&
+          Boolean(candidate.clientId?.startsWith(batchId))
+        );
+        for (const sibling of siblingDrafts) {
+          await sibling.markAsDeleted();
+        }
       }
     });
     syncCalendarChanges();
   };
 
   const declineDraftEvent = (event: CalendarEvent) => {
-    const originalDraftTitle = event.title;
     Alert.alert("Vorschlag ablehnen", "Möchtest du diesen Vorschlag wirklich ablehnen?", [
       { text: "Abbrechen", style: "cancel" },
       {
         text: "Ja, ablehnen",
         style: "destructive",
         onPress: async () => {
+          if (event.serverId && currentUser?.familyId) {
+            try {
+              await deleteEvent({ eventId: event.serverId as any, familyId: currentUser.familyId as any });
+            } catch (error) {
+              console.warn("Online draft delete failed, will sync offline", error);
+            }
+          }
           await database.write(async () => {
             await event.markAsDeleted();
-            if (event.creatorId === "scheduling-agent") {
-              const siblingDrafts = events.filter((candidate) =>
-                candidate.id !== event.id &&
-                candidate.status === "draft" &&
-                candidate.creatorId === "scheduling-agent" &&
-                candidate.title === originalDraftTitle
-              );
-              for (const sibling of siblingDrafts) {
-                await sibling.markAsDeleted();
-              }
-            }
           });
           setSelectedEvent(null);
           syncCalendarChanges();
@@ -199,6 +207,7 @@ function CalendarDashboardScreen({ events }: Props) {
     setSchedulingModalOpen(false);
     setSchedulingTitle("");
     setSchedulingDuration("60");
+    setSchedulingResourceId(null);
   };
   const submitSchedulingRequest = async () => {
     const title = schedulingTitle.trim();
@@ -209,6 +218,11 @@ function CalendarDashboardScreen({ events }: Props) {
     }
     const sanitizedStart = sanitizeDate(schedulingStart.trim());
     const sanitizedEnd = sanitizeDate(schedulingEnd.trim());
+    const isoRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/;
+    if (!isoRegex.test(sanitizedStart) || !isoRegex.test(sanitizedEnd)) {
+      Alert.alert("Datum ungültig", "Bitte gib einen gültigen Start- und Endzeitpunkt im ISO-Format (z.B. YYYY-MM-DDTHH:MM:SSZ) an.");
+      return;
+    }
     const startParsed = Date.parse(sanitizedStart);
     const endParsed = Date.parse(sanitizedEnd);
     if (Number.isNaN(startParsed) || Number.isNaN(endParsed) || startParsed >= endParsed) {
@@ -223,6 +237,7 @@ function CalendarDashboardScreen({ events }: Props) {
         title,
         durationMinutes,
         preferredTimeRange: { start: sanitizedStart, end: sanitizedEnd },
+        resourceId: schedulingResourceId ? schedulingResourceId as any : undefined,
       });
       closeSchedulingModal();
       Alert.alert("Terminvorschläge werden generiert", "Der Scheduling Agent legt gleich drei Vorschläge als Entwürfe an.");
@@ -241,6 +256,14 @@ function CalendarDashboardScreen({ events }: Props) {
 
   const submitLocalVeto = async () => {
     const reason = vetoReason.trim();
+    if (!isChild) {
+      Alert.alert("Fehler", "Nur Kinder dürfen Einspruch gegen Termine erheben.");
+      return;
+    }
+    if (reason.length > 500) {
+      Alert.alert("Fehler", "Der Grund für den Einspruch darf maximal 500 Zeichen lang sein.");
+      return;
+    }
     if (!vetoDraftEvent || !reason) {
       Alert.alert("Grund fehlt", "Bitte gib einen kurzen Grund für deinen Einspruch an.");
       return;
@@ -330,7 +353,7 @@ function CalendarDashboardScreen({ events }: Props) {
         </View>
       </View>
 
-      <DailyDigestCard digest={dailyDigest} loading={dailyDigest === undefined || dailyDigest === null} dateStr={todayDateStr} />
+      <DailyDigestCard digest={dailyDigest} loading={dailyDigest === undefined} dateStr={todayDateStr} />
 
       {canReviewDrafts ? (
         <TouchableOpacity accessibilityRole="button" accessibilityLabel="Terminvorschläge generieren" style={styles.schedulingButton} onPress={openSchedulingModal}>
@@ -386,6 +409,16 @@ function CalendarDashboardScreen({ events }: Props) {
             <TextInput accessibilityLabel="Dauer in Minuten" style={styles.vetoInput} value={schedulingDuration} onChangeText={setSchedulingDuration} keyboardType="number-pad" placeholder="Dauer in Minuten" placeholderTextColor="#8A8176" />
             <TextInput accessibilityLabel="Start des Wunschzeitraums" style={styles.vetoInput} value={schedulingStart} onChangeText={setSchedulingStart} placeholder="Start ISO" placeholderTextColor="#8A8176" />
             <TextInput accessibilityLabel="Ende des Wunschzeitraums" style={styles.vetoInput} value={schedulingEnd} onChangeText={setSchedulingEnd} placeholder="Ende ISO" placeholderTextColor="#8A8176" />
+            <View style={styles.resourceOptions}>
+              <TouchableOpacity accessibilityRole="button" style={[styles.resourceOption, !schedulingResourceId && styles.resourceOptionSelected]} onPress={() => setSchedulingResourceId(null)}>
+                <Text style={[styles.resourceOptionText, !schedulingResourceId && styles.resourceOptionTextSelected]}>Keine Ressource</Text>
+              </TouchableOpacity>
+              {(virtualMembers ?? []).filter((member: any) => member.type === "resource").map((resource: any) => (
+                <TouchableOpacity key={String(resource._id)} accessibilityRole="button" style={[styles.resourceOption, schedulingResourceId === resource._id && styles.resourceOptionSelected]} onPress={() => setSchedulingResourceId(String(resource._id))}>
+                  <Text style={[styles.resourceOptionText, schedulingResourceId === resource._id && styles.resourceOptionTextSelected]}>{resource.name}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
             <View style={styles.draftActions}>
               <TouchableOpacity accessibilityRole="button" disabled={isSubmittingScheduling} style={[styles.draftActionButton, styles.declineButton]} onPress={closeSchedulingModal}>
                 <Text style={styles.draftActionText}>Abbrechen</Text>
@@ -410,6 +443,7 @@ function CalendarDashboardScreen({ events }: Props) {
               onChangeText={setVetoReason}
               placeholder="Kurzer Grund …"
               placeholderTextColor="#8A8176"
+              maxLength={500}
               multiline
             />
             <View style={styles.draftActions}>
@@ -646,8 +680,13 @@ const styles = StyleSheet.create({
   vetoModal: { width: "100%", maxWidth: 420, borderRadius: 16, borderWidth: 1, borderColor: "#E2DDD5", backgroundColor: "#FBF9F5", padding: 16 },
   vetoInput: { minHeight: 96, marginTop: 12, borderRadius: 12, borderWidth: 1, borderColor: "#E2DDD5", padding: 12, color: "#2A2720", backgroundColor: "#FFFFFF", textAlignVertical: "top" },
   vetoPanel: { marginTop: 12, gap: 6 },
+  resourceOptions: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
+  resourceOption: { minHeight: 40, borderRadius: 8, borderWidth: 1, borderColor: "#D8D0C2", alignItems: "center", justifyContent: "center", paddingHorizontal: 12, backgroundColor: "#FFFDF8" },
+  resourceOptionSelected: { borderColor: "#6D8B74", backgroundColor: "#EEF4EE" },
+  resourceOptionText: { color: "#3A332B", fontWeight: "600" },
+  resourceOptionTextSelected: { color: "#385C42" },
   draftActions: { flexDirection: "row", gap: 8, marginTop: 12, marginBottom: 4 },
-  draftActionButton: { flex: 1, minHeight: 44, minWidth: 44, alignItems: "center", justifyContent: "center", borderRadius: 12, paddingHorizontal: 12 },
+  draftActionButton: { flex: 1, minHeight: Platform.OS === "android" ? 48 : 44, minWidth: 44, alignItems: "center", justifyContent: "center", borderRadius: 12, paddingHorizontal: 12 },
   approveButton: { backgroundColor: "#7D9B84" },
   declineButton: { backgroundColor: "#C06C5C" },
   vetoButton: { marginTop: 12, backgroundColor: "#C06C5C" },

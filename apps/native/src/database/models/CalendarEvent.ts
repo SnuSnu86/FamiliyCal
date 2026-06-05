@@ -13,6 +13,7 @@ export class CalendarEvent extends Model {
   };
 
   @field("server_id") serverId?: string | null;
+  @field("client_id") clientId?: string | null;
   @field("family_id") familyId!: string;
   @relation("families", "family_id") family!: Relation<Family>;
   @field("creator_id") creatorId?: string;
