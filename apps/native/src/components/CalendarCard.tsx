@@ -1,7 +1,9 @@
+import { Ionicons } from "@expo/vector-icons";
 import React, { useEffect, useRef } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 
 import type { CalendarEvent } from "../database/models/CalendarEvent";
+import { colors, elevation, fonts, radius, spacing } from "../theme";
 import { VetoBadge } from "./VetoBadge";
 
 type Props = {
@@ -10,6 +12,12 @@ type Props = {
   selected?: boolean;
   onPress?: (event: CalendarEvent) => void;
 };
+
+function accentColor(event: CalendarEvent): string {
+  if (event.vetoStatus === "vetoed") return colors.clay;
+  if (event.status === "draft") return colors.amber;
+  return colors.slate;
+}
 
 export function CalendarCard({ event, compact = false, selected = false, onPress }: Props) {
   const opacity = useRef(new Animated.Value(event.serverId ? 1 : 0.6)).current;
@@ -27,7 +35,7 @@ export function CalendarCard({ event, compact = false, selected = false, onPress
       style={[styles.card, event.status === "draft" && styles.draftCard, compact && styles.compactCard, selected && styles.selectedCard, { opacity }]}
       testID="calendar-card"
     >
-      <View style={styles.colorBar} />
+      <View style={[styles.colorBar, { backgroundColor: accentColor(event) }]} />
       <View style={[styles.content, compact && styles.compactContent]}>
         <View style={styles.titleRow}>
           <Text style={[styles.title, compact && styles.compactTitle]} numberOfLines={compact ? 2 : undefined}>
@@ -35,13 +43,25 @@ export function CalendarCard({ event, compact = false, selected = false, onPress
           </Text>
           {event.vetoStatus === "vetoed" ? <VetoBadge /> : null}
         </View>
-        <Text style={styles.time} numberOfLines={compact ? 1 : undefined}>
-          {formatRange(event.startDate, event.endDate)}
-        </Text>
-        {event.status === "draft" ? <Text style={styles.draftLabel}>(Vorschlag)</Text> : null}
+        <View style={styles.timeRow}>
+          <Ionicons name="time-outline" size={compact ? 11 : 13} color={colors.slate} />
+          <Text style={[styles.time, compact && styles.compactTime]} numberOfLines={compact ? 1 : undefined}>
+            {formatRange(event.startDate, event.endDate)}
+          </Text>
+        </View>
+        {event.status === "draft" ? (
+          <View style={[styles.badge, styles.draftBadge]}>
+            <Text style={styles.draftBadgeText}>Vorschlag</Text>
+          </View>
+        ) : null}
         {"recurrenceErrorMessage" in event && event.recurrenceErrorMessage ? <Text style={styles.errorText}>{String(event.recurrenceErrorMessage)}</Text> : null}
         {!compact && event.description ? <Text style={styles.description}>{event.description}</Text> : null}
-        {!event.serverId ? <Text style={styles.offlineLabel}>offline-card</Text> : null}
+        {!event.serverId ? (
+          <View style={[styles.badge, styles.offlineBadge]}>
+            <Ionicons name="cloud-offline-outline" size={12} color={colors.inkSoft} />
+            <Text style={styles.offlineBadgeText}>Offline gespeichert</Text>
+          </View>
+        ) : null}
       </View>
     </Animated.View>
   );
@@ -82,25 +102,31 @@ const styles = StyleSheet.create({
   card: {
     flexDirection: "row",
     overflow: "hidden",
-    borderRadius: 12,
-    backgroundColor: "#FBF9F5",
+    borderRadius: radius.md,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: "#E2DDD5",
-    marginHorizontal: 16,
-    marginVertical: 8,
+    borderColor: colors.line,
+    marginHorizontal: spacing.lg,
+    marginVertical: spacing.xs + 2,
+    ...elevation.low,
   },
-  compactCard: { marginHorizontal: 4, marginVertical: 4, borderRadius: 10 },
-  selectedCard: { borderColor: "#7D9B84", borderWidth: 2 },
-  draftCard: { borderColor: "#706B60", borderStyle: "dashed" },
-  colorBar: { width: 4, backgroundColor: "#5C7C8A" },
-  content: { flex: 1, padding: 12 },
-  compactContent: { padding: 8 },
-  titleRow: { flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" },
-  title: { color: "#2A2720", fontSize: 16, fontWeight: "600", flexShrink: 1 },
-  compactTitle: { fontSize: 13 },
-  time: { color: "#5C7C8A", marginTop: 4, fontSize: 12 },
-  draftLabel: { color: "#706B60", fontSize: 12, marginTop: 6, fontWeight: "600" },
-  description: { color: "#2A2720", marginTop: 8 },
-  errorText: { color: "#C06C5C", fontSize: 12, marginTop: 6, fontWeight: "600" },
-  offlineLabel: { color: "#9A6B4F", fontSize: 12, marginTop: 6, fontWeight: "600" },
+  compactCard: { marginHorizontal: spacing.xs, marginVertical: spacing.xs, borderRadius: radius.sm },
+  selectedCard: { borderColor: colors.sage, borderWidth: 2 },
+  draftCard: { borderColor: colors.amber, borderStyle: "dashed" },
+  colorBar: { width: 4 },
+  content: { flex: 1, padding: spacing.md },
+  compactContent: { padding: spacing.sm },
+  titleRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, flexWrap: "wrap" },
+  title: { fontFamily: fonts.bodySemiBold, fontSize: 16, color: colors.ink, flexShrink: 1 },
+  compactTitle: { fontFamily: fonts.bodySemiBold, fontSize: 13 },
+  timeRow: { flexDirection: "row", alignItems: "center", gap: spacing.xs, marginTop: spacing.xs },
+  time: { fontFamily: fonts.bodyMedium, color: colors.slate, fontSize: 12, flexShrink: 1 },
+  compactTime: { fontSize: 11 },
+  badge: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: spacing.xs, borderRadius: radius.pill, paddingHorizontal: spacing.sm, paddingVertical: 3, marginTop: spacing.sm },
+  draftBadge: { backgroundColor: colors.amberSoft },
+  draftBadgeText: { fontFamily: fonts.bodySemiBold, fontSize: 11, color: colors.amber },
+  offlineBadge: { backgroundColor: colors.surfaceSunken },
+  offlineBadgeText: { fontFamily: fonts.bodyMedium, fontSize: 11, color: colors.inkSoft },
+  errorText: { fontFamily: fonts.bodySemiBold, color: colors.clay, fontSize: 12, marginTop: spacing.xs },
+  description: { fontFamily: fonts.bodyRegular, color: colors.inkSoft, fontSize: 14, lineHeight: 20, marginTop: spacing.sm },
 });

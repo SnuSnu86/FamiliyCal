@@ -1,14 +1,11 @@
 import { DatabaseProvider } from "@nozbe/watermelondb/DatabaseProvider";
 import { useFonts } from "expo-font";
 import { Stack } from "expo-router";
-import { Platform, StatusBar, View, StyleSheet } from "react-native";
+import { StatusBar, View } from "react-native";
+import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import ConvexClientProvider from "../../ConvexClientProvider";
 import { database } from "../database";
-import { StatusDot } from "../components/StatusDot";
-import { toCamelCase } from "@packages/shared";
-
-const statusBarHeight =
-  Platform.OS === "ios" ? 50 : (StatusBar.currentHeight ?? 0);
+import { colors } from "../theme";
 
 export default function RootLayout() {
   const [loaded] = useFonts({
@@ -26,35 +23,29 @@ export default function RootLayout() {
   if (!loaded) return null;
 
   return (
-    <DatabaseProvider database={database}>
-      <ConvexClientProvider>
-        <View style={{ flex: 1 }}>
-          <View style={{ height: statusBarHeight, backgroundColor: "#0D87E1" }}>
-            <StatusBar
-              translucent
-              backgroundColor="#0D87E1"
-              barStyle="light-content"
-            />
-          </View>
-          <Stack screenOptions={{ headerShown: false }} />
-          <View style={styles.globalStatusDotContainer}>
-            <StatusDot />
-          </View>
-        </View>
-      </ConvexClientProvider>
-    </DatabaseProvider>
+    <SafeAreaProvider>
+      <DatabaseProvider database={database}>
+        <ConvexClientProvider>
+          <AppShell />
+        </ConvexClientProvider>
+      </DatabaseProvider>
+    </SafeAreaProvider>
   );
 }
 
-const styles = StyleSheet.create({
-  globalStatusDotContainer: {
-    position: "absolute",
-    top: statusBarHeight + 21,
-    right: 72,
-    zIndex: 9999,
-    width: 24,
-    height: 24,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-});
+/**
+ * Renders the navigation stack with a themed status-bar spacer. The spacer
+ * uses the real device top inset so content never sits under the notch, and
+ * matches the warm paper background instead of a clashing accent bar.
+ */
+function AppShell() {
+  const insets = useSafeAreaInsets();
+
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.paper }}>
+      <StatusBar translucent backgroundColor="transparent" barStyle="dark-content" />
+      <View style={{ height: insets.top, backgroundColor: colors.paper }} />
+      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.paper } }} />
+    </View>
+  );
+}

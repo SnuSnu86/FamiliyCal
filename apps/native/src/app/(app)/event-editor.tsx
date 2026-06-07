@@ -1,4 +1,4 @@
-import DateTimePicker from "@react-native-community/datetimepicker";
+import DateTimePicker, { DateTimePickerAndroid } from "@react-native-community/datetimepicker";
 import { useUser } from "@clerk/expo";
 import { calendarEventSchema } from "@packages/shared";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -16,6 +16,20 @@ import { syncPendingCalendarEvents } from "../../sync/calendarSync";
 const HOUR_MS = 60 * 60 * 1000;
 
 type FormErrors = Partial<Record<"title" | "start_date" | "end_date" | "family_id" | "rrule" | "timezone_id" | "form", string>>;
+type DateField = "start" | "end";
+
+function formatDateTime(value: Date, allDay: boolean) {
+  return new Intl.DateTimeFormat("de-DE", {
+    dateStyle: "medium",
+    ...(allDay ? {} : { timeStyle: "short" as const }),
+  }).format(value);
+}
+
+function withTimeFrom(source: Date, timeSource: Date) {
+  const next = new Date(source);
+  next.setHours(timeSource.getHours(), timeSource.getMinutes(), 0, 0);
+  return next;
+}
 
 export default function EventEditorScreen() {
   const router = useRouter();
@@ -60,7 +74,52 @@ export default function EventEditorScreen() {
   );
   const [errors, setErrors] = useState<FormErrors>({});
   const [saving, setSaving] = useState(false);
+  const [iosPicker, setIosPicker] = useState<DateField | null>(null);
   const savingRef = useRef(false);
+
+  const updateDate = (field: DateField, date: Date) => {
+    if (field === "start") {
+      setStartDate(date);
+      setEndDate((currentEnd) => (currentEnd <= date ? new Date(date.getTime() + HOUR_MS) : currentEnd));
+      return;
+    }
+    setEndDate(date);
+  };
+
+  const openAndroidPicker = (field: DateField) => {
+    const currentValue = field === "start" ? startDate : endDate;
+    DateTimePickerAndroid.open({
+      value: currentValue,
+      mode: "date",
+      onChange: (dateEvent, selectedDate) => {
+        if (dateEvent.type !== "set" || !selectedDate) return;
+
+        const nextDate = withTimeFrom(selectedDate, currentValue);
+        if (allDay) {
+          updateDate(field, nextDate);
+          return;
+        }
+
+        DateTimePickerAndroid.open({
+          value: nextDate,
+          mode: "time",
+          is24Hour: true,
+          onChange: (timeEvent, selectedTime) => {
+            if (timeEvent.type !== "set" || !selectedTime) return;
+            updateDate(field, withTimeFrom(nextDate, selectedTime));
+          },
+        });
+      },
+    });
+  };
+
+  const openDatePicker = (field: DateField) => {
+    if (Platform.OS === "android") {
+      openAndroidPicker(field);
+      return;
+    }
+    setIosPicker((visibleField) => (visibleField === field ? null : field));
+  };
 
   const triggerSync = () => {
     syncPendingCalendarEvents({ db: database, convexClient })
@@ -245,23 +304,37 @@ export default function EventEditorScreen() {
       <TextInput accessibilityLabel="Beschreibung" style={[styles.input, styles.multiline]} value={description} onChangeText={setDescription} multiline placeholder="Beschreibung" />
 
       <Text style={styles.label}>Startzeit</Text>
-      <DateTimePicker
-        value={startDate}
-        mode="datetime"
-        onChange={(event, date) => {
-          if (event.type !== "dismissed" && date) setStartDate(date);
-        }}
-      />
+      <TouchableOpacity accessibilityRole="button" style={styles.dateButton} onPress={() => openDatePicker("start")}>
+        <Text style={styles.dateButtonText}>{formatDateTime(startDate, allDay)}</Text>
+      </TouchableOpacity>
+      {iosPicker === "start" ? (
+        <DateTimePicker
+          value={startDate}
+          mode={allDay ? "date" : "datetime"}
+          display="spinner"
+          onChange={(event, date) => {
+            if (event.type === "dismissed") setIosPicker(null);
+            if (date) updateDate("start", date);
+          }}
+        />
+      ) : null}
       {errors.start_date ? <Text style={styles.error}>{errors.start_date}</Text> : null}
 
       <Text style={styles.label}>Endzeit</Text>
-      <DateTimePicker
-        value={endDate}
-        mode="datetime"
-        onChange={(event, date) => {
-          if (event.type !== "dismissed" && date) setEndDate(date);
-        }}
-      />
+      <TouchableOpacity accessibilityRole="button" style={styles.dateButton} onPress={() => openDatePicker("end")}>
+        <Text style={styles.dateButtonText}>{formatDateTime(endDate, allDay)}</Text>
+      </TouchableOpacity>
+      {iosPicker === "end" ? (
+        <DateTimePicker
+          value={endDate}
+          mode={allDay ? "date" : "datetime"}
+          display="spinner"
+          onChange={(event, date) => {
+            if (event.type === "dismissed") setIosPicker(null);
+            if (date) updateDate("end", date);
+          }}
+        />
+      ) : null}
       {errors.end_date ? <Text style={styles.error}>{errors.end_date}</Text> : null}
 
       <View style={styles.switchRow}>
@@ -321,6 +394,8 @@ const styles = StyleSheet.create({
   heading: { color: "#2A2720", fontSize: 24, fontWeight: "700", marginBottom: 8 },
   label: { color: "#2A2720", fontWeight: "600" },
   input: { backgroundColor: "#FBF9F5", borderColor: "#E2DDD5", borderWidth: 1, borderRadius: 12, padding: 12, color: "#2A2720" },
+  dateButton: { backgroundColor: "#FBF9F5", borderColor: "#E2DDD5", borderWidth: 1, borderRadius: 12, padding: 12 },
+  dateButtonText: { color: "#2A2720" },
   multiline: { minHeight: 80, textAlignVertical: "top" },
   switchRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   privateCard: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", backgroundColor: "#EFE6D8", borderColor: "#D8C8AE", borderWidth: 1, borderRadius: 16, padding: 12 },
